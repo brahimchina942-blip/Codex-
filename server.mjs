@@ -57,8 +57,10 @@ export function createApp(config = readConfig(), options = {}) {
       const allowedHost = config.origin ? new URL(config.origin).host : null;
       if (allowedHost ? host !== allowedHost : !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) throw new HttpError(403, '访问地址未授权。');
       const origin = config.origin || `http://${host}`;
-      if (req.headers.origin && req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, '不允许跨站请求。');
       const path = new URL(req.url, origin).pathname, method = req.method;
+      const publicNavigation = method === 'GET' && path === '/' &&
+        req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document';
+      if (!publicNavigation && (req.headers.origin && req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site')) throw new HttpError(403, '不允许跨站请求。');
       if (method === 'GET' && path === '/api/status') return send(200, {
         authenticated: auth(req), password_required: !!config.password,
         qwen_configured: !!(config.apiKey && config.baseUrl && !config.baseUrl.includes('YOUR_WORKSPACE_ID')),

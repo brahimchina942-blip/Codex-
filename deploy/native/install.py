@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 
@@ -28,6 +29,7 @@ CONFIG = Path('/etc/morocco-ai-crm')
 ACME = Path('/var/lib/morocco-ai-crm-acme')
 USER = 'moroccocrm'
 SERVICE_UNIT = Path('/etc/systemd/system/morocco-ai-crm.service')
+RENEWAL_UNIT = Path('/etc/systemd/system/morocco-ai-crm-renew.service')
 MARKER = '# Managed by Morocco AI CRM native deployment'
 PACKAGE = Path(__file__).resolve().parent
 APPLICATION = PACKAGE / 'app' if (PACKAGE / 'app/server.mjs').is_file() else PACKAGE.parent.parent
@@ -269,6 +271,88 @@ def wait_for_app():
                 raise RuntimeError('应用未通过启动检查，请查看 journalctl -u morocco-ai-crm -n 40。')
             time.sleep(1)
 
+def prepare_certbot():
+    record = CONFIG / 'certbot-https.json'
+    if record.exists():
+        executable = Path(json.loads(record.read_text())['executable'])
+        if not executable.resolve().is_relative_to(BASE.resolve()) or not executable.is_file():
+            raise RuntimeError('证书工具记录异常，停止。')
+        return executable
+    directory = Path(tempfile.mkdtemp(prefix='certbot-https-', dir=BASE))
+    run([sys.executable, '-I', '-m', 'venv', directory])
+    # Ignore server-wide HTTP mirrors, trusted-host overrides and pip caches.
+    environment = {k: v for k, v in os.environ.items() if not k.startswith('PIP_')}
+    environment['PIP_CONFIG_FILE'] = os.devnull
+    subprocess.run([str(directory / 'bin/python'), '-I', '-m', 'pip', 'install',
+                    '--disable-pip-version-check', '--no-cache-dir', '--only-binary=:all:',
+                    '--index-url', 'https://pypi.org/simple', 'certbot==5.8.0'],
+                   check=True, env=environment)
+    executable = directory / 'bin/certbot'
+    run([executable, '--version'])
+    atomic(record, json.dumps({'executable': str(executable)}), 0o600)
+    return executable
+
+def repair_certbot():
+    unit = RENEWAL_UNIT
+    managed(unit)
+    content = unit.read_text()
+    pattern = r'^ExecStart=\S+ renew --cert-name ' + re.escape(DOMAIN) + r' '
+    if len(re.findall(pattern, content, flags=re.M)) != 1:
+        raise RuntimeError('续期配置与预期不一致，未修改。')
+    run(['systemctl', 'stop', 'morocco-ai-crm-renew.timer'])
+    executable = prepare_certbot()
+    updated = re.sub(pattern, lambda match: 'ExecStart=' + str(executable) + ' renew --cert-name ' + DOMAIN + ' ', content, flags=re.M)
+    atomic(unit, updated)
+    atomic(BASE / 'manage.py', Path(__file__).read_text())
+    run(['systemctl', 'daemon-reload'])
+    run(['systemctl', 'enable', '--now', 'morocco-ai-crm-renew.timer'])
+    print('证书工具已从官方HTTPS来源重新安装，续期定时器已切换；网页、证书、密码及数据保持不变。')
+
+def check_navigation():
+    for path, headers, expected in (
+        ('/', {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document'}, 200),
+        ('/api/customers', {'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document'}, 403),
+        ('/api/customers', {}, 401),
+    ):
+        connection = http.client.HTTPConnection('127.0.0.1', PORT, timeout=5)
+        try:
+            connection.request('GET', path, headers={'Host': DOMAIN, **headers})
+            response = connection.getresponse()
+            response.read()
+            if response.status != expected:
+                raise RuntimeError('登录入口验证失败，已停止。')
+        finally:
+            connection.close()
+
+def repair_navigation():
+    target = (BASE / 'current/server.mjs').resolve(strict=True)
+    if not target.is_relative_to((BASE / 'releases').resolve()):
+        raise RuntimeError('应用路径异常，停止。')
+    replacement = (APPLICATION / 'server.mjs').read_bytes()
+    if hashlib.sha256(replacement).hexdigest() != '41ea98a82f0abf53d1f42ec0807e766405bb3aed81451f601eca180f0f9d8ce7':
+        raise RuntimeError('登录修复源码校验失败，未修改。')
+    previous = target.read_bytes()
+    if hashlib.sha256(previous).hexdigest() not in (
+        'ce439d71c6edb36757c5750b49171074242f9bc60208ccbe703911ce54a94055',
+        '41ea98a82f0abf53d1f42ec0807e766405bb3aed81451f601eca180f0f9d8ce7',
+    ):
+        raise RuntimeError('服务器源码有其他改动，停止以保留现有修改。')
+    managed(SERVICE_UNIT)
+    backup = CONFIG / 'server-before-navigation.mjs'
+    if not backup.exists():
+        atomic(backup, previous.decode(), 0o600)
+    atomic(target, replacement.decode())
+    try:
+        run(['systemctl', 'restart', 'morocco-ai-crm'])
+        wait_for_app()
+        check_navigation()
+    except Exception:
+        atomic(target, previous.decode())
+        run(['systemctl', 'restart', 'morocco-ai-crm'])
+        raise
+    atomic(BASE / 'manage.py', Path(__file__).read_text())
+    print('登录入口已修复，外站链接访问及接口保护检查通过。密码和客户数据已保留。')
+
 def resume():
     """Finish an initial installation interrupted before its Nginx site was created."""
     state = json.loads((CONFIG / 'state.json').read_text())
@@ -394,16 +478,7 @@ def https():
                 raise RuntimeError('域名HTTP验证未返回本机校验内容。')
     finally:
         test.unlink(missing_ok=True)
-    certbot = Path(shutil.which('certbot') or BASE / 'certbot/bin/certbot')
-    if not certbot.exists():
-        try:
-            run([sys.executable, '-m', 'venv', BASE / 'certbot'])
-        except subprocess.CalledProcessError:
-            if not shutil.which('dnf'):
-                raise RuntimeError('缺少Python venv/pip，请安装系统对应软件包后重试 --https。')
-            run(['dnf', '-y', 'install', 'python3-pip'])
-            run([sys.executable, '-m', 'venv', BASE / 'certbot'])
-        run([BASE / 'certbot/bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', 'certbot'])
+    certbot = prepare_certbot()
     run([certbot, 'certonly', '--cert-name', DOMAIN, '--webroot', '-w', ACME, '-d', DOMAIN,
          '--non-interactive', '--agree-tos', '--register-unsafely-without-email', '--keep-until-expiring'])
     before = website_status()
@@ -411,7 +486,7 @@ def https():
     if website_status() != before:
         raise RuntimeError('现有官网HTTP状态发生变化，请检查。')
     hook = shlex.join(state['nginx'] + ['-t']) + ' && ' + shlex.join(state['nginx'] + ['-s', 'reload'])
-    renewal = Path('/etc/systemd/system/morocco-ai-crm-renew.service')
+    renewal = RENEWAL_UNIT
     timer = Path('/etc/systemd/system/morocco-ai-crm-renew.timer')
     managed(renewal)
     managed(timer)
@@ -464,18 +539,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', action='store_true')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--repair-certbot', action='store_true')
+    parser.add_argument('--repair-navigation', action='store_true')
     parser.add_argument('--https', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--backup', action='store_true')
     args = parser.parse_args()
-    if sum((args.install, args.resume, args.https, args.status, args.backup)) != 1:
-        parser.error('请选择 --install / --resume / --https / --status / --backup')
+    if sum((args.install, args.resume, args.repair_certbot, args.repair_navigation, args.https, args.status, args.backup)) != 1:
+        parser.error('请选择 --install / --resume / --repair-navigation / --repair-certbot / --https / --status / --backup')
     if os.geteuid() != 0:
         raise RuntimeError('请以root执行。')
     if args.install:
         install()
     elif args.resume:
         resume()
+    elif args.repair_certbot:
+        repair_certbot()
+    elif args.repair_navigation:
+        repair_navigation()
     elif args.https:
         https()
     elif args.backup:

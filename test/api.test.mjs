@@ -55,6 +55,26 @@ test('静态页面有内容安全策略，状态接口不暴露环境密钥',asy
   const a=await app(t);const r=await fetch(a.url);assert.equal(r.status,200);assert.ok(r.headers.get('content-security-policy').includes("script-src 'self'"));assert.ok((await r.text()).includes('摩洛哥智能客户翻译助手'));
   const status=await a.call('/api/status',undefined,'GET');assert.equal(status.value.qwen_configured,false);assert.ok(!Object.hasOwn(status.value,'apiKey'));
 });
+test('从外站链接可打开登录页，跨站接口、登录提交和嵌入仍被拒绝',async t=>{
+  const a=await app(t,'navigation-test-password');
+  const login=await a.call('/api/login',{password:'navigation-test-password'});
+  const cookie=login.headers.get('set-cookie').split(';')[0];
+  const headers={'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'};
+  const navigate=(path,extra={},method='GET',body)=>new Promise((resolve,reject)=>{
+    const req=request(a.url+path,{method,headers:{...headers,...extra}},res=>{
+      let text='';res.setEncoding('utf8');res.on('data',chunk=>{text+=chunk;});
+      res.on('end',()=>resolve({status:res.statusCode,text}));
+    });req.on('error',reject);req.end(body);
+  });
+  const page=await navigate('/');
+  assert.equal(page.status,200);assert.ok(page.text.includes('摩洛哥智能客户翻译助手'));
+  assert.equal((await navigate('/api/customers',{Cookie:cookie})).status,403);
+  assert.equal((await navigate('/api/status')).status,403);
+  assert.equal((await navigate('/',{'Sec-Fetch-Dest':'iframe'})).status,403);
+  assert.equal((await navigate('/',{'Sec-Fetch-Mode':'cors','Sec-Fetch-Dest':'empty'})).status,403);
+  assert.equal((await navigate('/api/login',{'Content-Type':'application/json'},'POST',JSON.stringify({password:'navigation-test-password'}))).status,403);
+  assert.equal((await a.call('/api/customers',undefined,'GET')).status,401);
+});
 test('非回环地址未配置密码和明确访问地址时不能启动',()=>{
   assert.throws(()=>readConfig({HOST:'0.0.0.0'}),/必须配置/);
 });
