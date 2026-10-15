@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#145c47"><title>Morocco AI CRM · 摩洛哥客户助手</title>
+  <link rel="stylesheet" href="/styles.css"><script type="module" src="/app.js"></script>
+</head>
+<body data-panel="chat">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">M<span>✦</span></span><div><strong>Morocco AI CRM</strong><small>Barsan · 摩洛哥智能客户翻译助手</small></div></div>
+    <div class="top-actions"><span id="model-status" class="pill">检查接口…</span><button id="settings-btn" class="button quiet">接口设置</button><button id="logout-btn" class="button quiet" hidden>退出</button></div>
+  </header>
+  <nav class="mobile-nav" aria-label="工作区"><button data-panel="customers">客户</button><button data-panel="chat" class="selected">对话</button><button data-panel="profile">档案</button></nav>
+  <main class="app-shell">
+    <aside class="sidebar" aria-label="客户列表">
+      <div class="sidebar-title"><h2>我的客户 <span id="customer-count">0</span></h2><button id="new-customer" class="icon-button" title="新建客户" aria-label="新建客户">＋</button></div>
+      <label class="search"><span>⌕</span><input id="customer-search" placeholder="搜索姓名、电话、城市" aria-label="搜索客户"></label>
+      <div class="sidebar-note">每位客户拥有独立聊天与记忆</div>
+      <div id="customer-list" class="customer-list"></div>
+      <div class="sidebar-bottom"><button id="recover-btn" class="button quiet full">待审核草稿 <span id="draft-count">0</span></button><p>本机保存 · 回复由你确认后复制</p></div>
+    </aside>
+    <section class="conversation" aria-label="客户聊天">
+      <header class="conversation-head"><div class="head-person"><div id="active-avatar" class="avatar">✦</div><div><h1 id="active-name">你的摩洛哥客户工作台</h1><p id="active-meta">读懂混合语言，接续每一次交流</p></div></div><button id="edit-customer" class="button quiet" hidden>编辑客户</button></header>
+      <div id="demo-notice" class="demo-notice" hidden>固定演示档案 · 不代表真实客户或千问识别结果</div>
+      <div id="shipment-bar" class="shipment-bar" hidden><label for="shipment-select">运输需求</label><select id="shipment-select" aria-label="当前运输需求"></select><button id="new-shipment" class="button quiet">＋ 新建</button></div>
+      <div id="chat-search-wrap" class="chat-search-wrap" hidden><input id="chat-search" placeholder="搜索这位客户的原文或中文翻译" aria-label="搜索聊天记录"></div>
+      <div id="chat-area" class="chat-area">
+        <div class="welcome"><div class="eyebrow">CHINA → MOROCCO</div><h2>聊天看得懂，<br>客户记得住。</h2><p>把英语、法语和 Darija 混合聊天，<br>变成清楚的中文与有来源的客户记忆。</p><div class="workflow"><span><b>01</b> 上传截图</span><span><b>02</b> 确认翻译</span><span><b>03</b> 保存记忆</span></div><button id="demo-btn" class="button primary">体验固定示例 ↗</button><small>无需密钥 · 演示数据会先进入审核草稿</small></div>
+      </div>
+      <section id="replies" class="replies" hidden aria-label="AI回复参考"></section>
+      <footer class="composer" id="drop-zone">
+        <div id="image-list" class="image-list"></div>
+        <textarea id="message-input" rows="2" placeholder="粘贴客户原话，或 Command / Ctrl + V 粘贴截图…" aria-label="客户聊天输入"></textarea>
+        <div class="composer-controls"><div><label class="button quiet upload-label">＋ 上传截图<input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></label><span class="upload-help">可拖入图片 · 最多5张</span></div><button id="analyze-btn" class="button primary">分析并翻译 ↗</button></div>
+        <p class="composer-footnote">先审核，再归档。分析时会使用当前所选客户的历史记忆。</p>
+      </footer>
+    </section>
+    <aside class="profile" aria-label="客户档案">
+      <div class="profile-title"><h2>客户记忆</h2><span class="small-badge">有据可查</span></div>
+      <div id="profile-content" class="profile-content"><div class="profile-empty"><span>◎</span><h3>让每次沟通都有上下文</h3><p>客户的货物、体积、城市与待办，<br>确认后会出现在这里。</p><div class="info-card"><b>独立记忆</b><p>客户之间隔离；货量变化保留历史。</p></div><div class="info-card"><b>你掌握判断</b><p>客户明确陈述与 AI 推测分别标记。</p></div></div></div>
+    </aside>
+  </main>
+  <dialog id="review-dialog" class="review-dialog">
+    <form id="review-form"><div class="dialog-head"><div><span class="eyebrow">REVIEW BEFORE SAVE</span><h2>确认识别结果与客户归属</h2></div><button type="button" id="review-close" class="icon-button" aria-label="关闭审核">×</button></div>
+      <div id="review-body" class="dialog-body"></div><div class="dialog-foot"><span>原始截图会保留，回复建议不会自动发送。</span><button type="submit" id="commit-btn" class="button primary">确认并保存到档案</button></div>
+    </form>
+  </dialog>
+  <dialog id="small-dialog" class="small-dialog"><div class="dialog-head"><h2 id="small-title"></h2><button id="small-close" class="icon-button" aria-label="关闭窗口">×</button></div><div id="small-body" class="dialog-body"></div></dialog>
+  <dialog id="login-dialog" class="small-dialog"><form id="login-form"><div class="dialog-head"><h2>登录私人工作台</h2></div><div class="dialog-body"><label>访问密码<input name="password" type="password" autocomplete="current-password" required></label><p id="login-error" class="error-text"></p><button class="button primary full">登录</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite" class="toast" hidden></div>
+</body>
+</html>

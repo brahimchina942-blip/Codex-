@@ -1,0 +1,11 @@
+node_modules/
+.env
+data/
+backups/
+test-results/
+*.log
+.DS_Store
+
+deploy/native/runtime/
+
+__pycache__/

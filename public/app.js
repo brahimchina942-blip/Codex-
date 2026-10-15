@@ -1,0 +1,198 @@
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state = { customers:[], selected:null, shipment:null, detail:null, files:[], draft:null, replyStyle:'friendly', busy:false, status:{} };
+const shipmentStatuses = ['询价中','待报价','待确认','运输中','已完成','已取消'];
+const quoteStatuses = ['草稿','已向客户报价','客户已确认','已过期','已拒绝'];
+const labels = { goods:'采购货物',origin:'中国货源地',destination:'收货城市',volume:'体积',weight:'重量',packages:'包装数量',shipping:'运输方式',terms:'交付范围',quote:'报价',contact:'联系方式',follow_up:'待跟进',language:'沟通语言' };
+const styles = { professional:'专业商务',friendly:'自然友好',short:'简短直接' };
+let toastTimer, selectionVersion=0, customerSearchTimer, chatSearchTimer;
+function toast(message,error=false){$('toast').textContent=message;$('toast').classList.toggle('error',error);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
+async function api(path,options={}){
+  const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...options.headers}});
+  const value=await response.json();
+  if(!response.ok){if(response.status===401 && !path.includes('/login'))$('login-dialog').showModal();throw new Error(value.error||'请求失败');}
+  return value;
+}
+const post=(path,value)=>api(path,{method:'POST',body:JSON.stringify(value)});
+function setPanel(panel){document.body.dataset.panel=panel;document.querySelectorAll('.mobile-nav button').forEach(b=>b.classList.toggle('selected',b.dataset.panel===panel));}
+document.querySelectorAll('.mobile-nav button').forEach(b=>b.addEventListener('click',()=>setPanel(b.dataset.panel)));
+function avatar(name){return [...name.trim()][0]?.toUpperCase()||'M';}
+function time(value){return value?new Date(value).toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'}):'';}
+async function refreshCustomers(){state.customers=await api('/api/customers');renderCustomers();}
+function renderCustomers(){
+  const q=$('customer-search').value.toLowerCase().trim();
+  const customers=state.customers.filter(c=>[c.name,c.phone,c.city,c.last_message||''].some(t=>t.toLowerCase().includes(q)));
+  $('customer-count').textContent=state.customers.length;
+  $('customer-list').innerHTML=customers.length?customers.map(c=>`<button class="client ${c.id===state.selected?'active':''}" data-customer="${esc(c.id)}"><div class="avatar">${esc(avatar(c.name))}</div><div class="client-copy"><div class="client-title"><strong>${esc(c.name)}</strong><small>${time(c.updated_at)}</small></div><p>${esc(c.last_message||c.city||'还没有聊天记录')}</p></div></button>`).join(''):`<div class="empty-list">${q?'没有匹配客户':'从一张截图开始<br>或点击 ＋ 建立客户档案'}</div>`;
+  document.querySelectorAll('[data-customer]').forEach(b=>b.onclick=()=>selectCustomer(b.dataset.customer));
+}
+async function selectCustomer(id,shipment=null){
+  state.selected=id;state.shipment=shipment;const version=++selectionVersion;renderCustomers();setPanel('chat');
+  $('chat-area').innerHTML='<div class="loading-block">读取客户记忆…</div>';
+  try{const detail=await api(`/api/customers/${id}?shipment_id=${encodeURIComponent(shipment||'')}`);if(version!==selectionVersion)return;state.detail=detail;renderDetail();}
+  catch(e){toast(e.message,true);}
+}
+async function reloadDetail(){if(state.selected)await selectCustomer(state.selected,state.shipment);await refreshCustomers();}
+const scopedMessages=messages=>messages.filter(m=>(m.shipment_id||null)===state.shipment);
+function renderDetail(){
+  const {customer,messages,facts,latest}=state.detail;
+  $('active-name').textContent=customer.name;$('active-avatar').textContent=avatar(customer.name);
+  $('active-meta').textContent=[customer.city,customer.preferred_language,customer.status].filter(Boolean).join(' · ');
+  $('edit-customer').hidden=false;$('chat-search-wrap').hidden=false;$('chat-search').value='';
+  $('demo-notice').hidden=!latest?.demo;
+  $('shipment-bar').hidden=false;
+  $('shipment-select').innerHTML=`<option value="">未分类 / 客户一般沟通</option>${state.detail.shipments.map(s=>`<option value="${s.id}" ${s.id===state.shipment?'selected':''}>${esc(s.title)} · ${esc(s.status)}</option>`).join('')}`;
+  renderMessages(scopedMessages(messages));renderProfile(customer,facts,latest);renderReplies(latest);
+}
+function renderMessages(messages){
+  $('chat-area').innerHTML=messages.length?messages.map(m=>`<article id="msg-${m.id}" class="message-row ${m.speaker==='self'?'self':''}"><div class="avatar message-avatar">${m.speaker==='self'?'我':esc(avatar(state.detail.customer.name))}</div><div class="message-body"><div class="message-meta"><span>${m.speaker==='self'?'我的消息':'客户'}</span><span>${esc(m.visible_time||'截图未显示时间')}</span>${m.uncertain?'<span class="warning-tag">需留意识别</span>':''}</div><div class="bubble"><p class="original" dir="auto">${esc(m.original)}</p><div class="translation"><span>中文理解</span>${esc(m.chinese)}</div></div><div class="message-tools"><button class="text-button" data-copy-message="${m.id}">复制原文</button><button class="text-button" data-edit-message="${m.id}">校对</button><button class="text-button" data-delete-message="${m.id}">删除</button>${m.screenshots.map((s,i)=>`<button class="text-button" data-image="${s.id}">截图${i+1}</button>`).join('')}</div></div></article>`).join(''):'<div class="empty-list">这位客户还没有聊天记录。<br>上传截图或粘贴原话，开始第一轮分析。</div>';
+  document.querySelectorAll('[data-copy-message]').forEach(b=>b.onclick=()=>copy(messages.find(m=>m.id===b.dataset.copyMessage).original));
+  document.querySelectorAll('[data-edit-message]').forEach(b=>b.onclick=()=>editMessage(messages.find(m=>m.id===b.dataset.editMessage)));
+  document.querySelectorAll('[data-delete-message]').forEach(b=>b.onclick=()=>deleteMessage(messages.find(m=>m.id===b.dataset.deleteMessage)));
+  document.querySelectorAll('[data-image]').forEach(b=>b.onclick=()=>showSmall('原始截图',`<img src="/api/screenshots/${b.dataset.image}" alt="原始聊天截图">`));
+  $('chat-area').scrollTop=$('chat-area').scrollHeight;
+}
+function renderProfile(customer,facts,latest){
+  facts=facts.filter(f=>(f.shipment_id||null)===state.shipment || (!f.shipment_id && ['contact','language'].includes(f.field)));
+  const active=facts.filter(f=>f.state==='active');const old=facts.filter(f=>f.state!=='active');
+  const factHtml=f=>`<div class="fact ${f.certainty==='inferred'?'inferred':''} ${f.state}"><div class="fact-label"><span>${esc(labels[f.field])}</span><span>${f.state==='superseded'?'已被更新':f.state==='needs_review'?'原消息变更 · 待复核':f.certainty==='inferred'?'AI推测':'客户明确陈述'}</span></div><div class="fact-value">${esc(f.value)}</div><button class="fact-source" data-source="${f.id}">查看消息来源 ↗</button></div>`;
+  $('profile-content').innerHTML=`<div class="profile-details"><p><span>联系信息</span><strong>${esc(customer.phone||'未记录')}</strong></p><p><span>归档消息</span><strong>${state.detail.messages.length} 条</strong></p><p><span>客户状态</span><strong>${esc(customer.status)}</strong></p></div>${latest?`<div class="profile-summary"><h3>${latest.demo?'演示':'本次'}沟通摘要</h3><p>${esc(latest.summary)}</p>${latest.stale?'<p class="warning-tag">消息、报价或运输需求已变更，请重新分析后参考摘要和回复。</p>':''}</div>`:''}<div class="section-label"><span>当前记忆</span><span>${active.length} 项</span></div>${active.length?active.map(factHtml).join(''):'<p class="empty-list">尚未确认客户事实</p>'}${old.length?`<details><summary class="section-label">历史与待复核 · ${old.length} 项</summary>${old.map(factHtml).join('')}</details>`:''}<div class="section-label">数据留档</div><button id="export-customer" class="button quiet full">导出客户文字档案 ↓</button>`;
+  document.querySelectorAll('[data-source]').forEach(b=>b.onclick=()=>{const f=facts.find(f=>f.id===b.dataset.source);showSmall('记忆来源',`<p>${esc(labels[f.field])}：${esc(f.value)}</p><div class="source-quote" dir="auto">${esc(f.evidence)}</div><p class="translation">${esc(f.evidence_chinese)}</p><p>${esc(f.evidence_time||'原截图无可见时间')}</p>`);});
+  $('export-customer').onclick=()=>{const a=document.createElement('a');a.href=`/api/customers/${customer.id}/export`;a.download='customer-export.json';a.click();};
+  const shipment=state.detail.shipments.find(s=>s.id===state.shipment);
+  const quotes=state.detail.quotes.filter(q=>q.shipment_id===state.shipment);
+  const business=document.createElement('section');business.className='shipment-profile';
+  business.innerHTML=shipment?`<div class="section-label"><span>这票运输需求</span><button id="edit-shipment" class="text-button">编辑</button></div><h3>${esc(shipment.title)}</h3><p>${esc(shipment.status)}</p>${shipment.notes?`<p>${esc(shipment.notes)}</p>`:''}<div class="section-label"><span>报价记录 · ${quotes.length}</span><button id="new-quote" class="text-button">＋ 记录报价</button></div><p class="identity-hint">手动录入实际报价；新记录保留旧金额。</p>${quotes.map(q=>`<div class="quote-card"><strong>${esc(q.amount)} ${esc(q.currency)}</strong><span class="small-badge">${esc(q.status)}</span><p>${esc(q.scope)}</p><p>有效期：${esc(q.valid_until||'未注明')}</p>${q.notes?`<p>${esc(q.notes)}</p>`:''}<small>${q.state==='needs_review'?'来源已校对或删除 · 待复核':q.evidence_message_id?'有消息来源':'人工录入 · 未关联消息'}</small>${q.evidence_message_id?`<button class="fact-source" data-quote-source="${q.id}">查看来源 ↗</button>`:''}</div>`).join('')}`:`<div class="section-label">运输需求 · ${state.detail.shipments.length} 票</div><p class="identity-hint">旧记录保留在未分类。请选择或新建运输需求，再分析这票货物，防止不同订单的货量互相覆盖。</p><button id="profile-new-shipment" class="button quiet full">＋ 新建运输需求</button>`;
+  $('profile-content').prepend(business);
+  if(shipment){$('edit-shipment').onclick=()=>shipmentForm(shipment);$('new-quote').onclick=quoteForm;}
+  else $('profile-new-shipment').onclick=()=>shipmentForm();
+  document.querySelectorAll('[data-quote-source]').forEach(b=>b.onclick=()=>{const q=quotes.find(q=>q.id===b.dataset.quoteSource),m=state.detail.messages.find(m=>m.id===q.evidence_message_id);showSmall('报价来源',m?`<div class="source-quote" dir="auto">${esc(m.original)}</div><p>${esc(m.chinese)}</p>`:'来源消息已删除，请复核报价。');});
+}
+function shipmentForm(shipment=null){
+  const customerId=state.selected;if(!customerId)return toast('请先选择客户',true);
+  showSmall(shipment?'编辑运输需求':'新建运输需求',`<form id="shipment-form"><label>这票货物的名称<input name="title" maxlength="120" value="${esc(shipment?.title||'')}" placeholder="例如：家具 · 义乌到卡萨布兰卡" required></label><label>状态<select name="status">${shipmentStatuses.map(s=>`<option ${s===shipment?.status?'selected':''}>${s}</option>`).join('')}</select></label><label>人工备注<textarea name="notes" maxlength="2000" rows="3">${esc(shipment?.notes||'')}</textarea></label><p>每票货物拥有独立消息、事实和报价。既有未分类记录不会自动迁入。</p><div class="buttons"><button class="button primary">保存运输需求</button></div></form>`);
+  $('shipment-form').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));try{const path=`/api/customers/${customerId}/shipments`;const s=shipment?await api(`${path}/${shipment.id}`,{method:'PATCH',body:JSON.stringify(b)}):await post(path,b);$('small-dialog').close();await selectCustomer(customerId,s.id);await refreshCustomers();}catch(e){toast(e.message,true);}};
+}
+function quoteForm(){
+  const customerId=state.selected,shipmentId=state.shipment;
+  const messages=scopedMessages(state.detail.messages);
+  showSmall('记录实际报价',`<form id="quote-form"><div class="review-grid"><label>金额<input name="amount" inputmode="decimal" placeholder="例如：1250.00" maxlength="20" required></label><label>币种<select name="currency">${['USD','CNY','EUR','MAD','AED','GBP'].map(c=>`<option>${c}</option>`).join('')}</select></label></div><label>包含及不包含的范围<textarea name="scope" rows="3" maxlength="2000" placeholder="例如：海运至港；不含清关、税费和派送" required></textarea></label><label>有效期（可留空）<input type="date" name="valid_until"></label><label>状态<select name="status">${quoteStatuses.map(s=>`<option>${s}</option>`).join('')}</select></label><label>消息来源<select name="evidence_message_id"><option value="">人工录入，未关联消息</option>${messages.map(m=>`<option value="${m.id}">${esc(m.chinese.slice(0,90))}</option>`).join('')}</select></label><label>备注<textarea name="notes" rows="2" maxlength="2000"></textarea></label><p>只记录你已核对的报价；不会计算运价或自动发送。金额和币种保存后不覆盖，修订时新增一条。</p><div class="buttons"><button class="button primary">保存报价记录</button></div></form>`);
+  $('quote-form').onsubmit=async e=>{e.preventDefault();try{await post(`/api/customers/${customerId}/shipments/${shipmentId}/quotes`,Object.fromEntries(new FormData(e.target)));$('small-dialog').close();await selectCustomer(customerId,shipmentId);toast('报价已记录');}catch(e){toast(e.message,true);}};
+}
+$('shipment-select').onchange=()=>selectCustomer(state.selected,$('shipment-select').value||null);
+$('new-shipment').onclick=()=>shipmentForm();
+function renderReplies(latest){
+  const replies=latest?.replies||[];$('replies').hidden=!replies.length;
+  if(!replies.length)return;
+  if(latest.stale){$('replies').innerHTML='<div class="warning-box">消息、报价或运输需求有变更，旧回复已停用。请结合当前记录输入补充说明并重新分析。</div>';return;}
+  const reply=replies.find(r=>r.style===state.replyStyle)||replies[0];
+  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest.demo?'· 固定演示':''}</h3><div class="reply-tabs">${replies.map(r=>`<button data-reply="${r.style}" class="${reply.style===r.style?'active':''}">${styles[r.style]}</button>`).join('')}</div></div><p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><button id="copy-reply" class="button">复制回复</button></div>`;
+  document.querySelectorAll('[data-reply]').forEach(b=>b.onclick=()=>{state.replyStyle=b.dataset.reply;renderReplies(latest);});
+  $('copy-reply').onclick=()=>copy(reply.text);
+}
+async function copy(text){try{await navigator.clipboard.writeText(text);toast('已复制');}catch{showSmall('请手动复制',`<textarea id="copy-fallback" rows="8" readonly>${esc(text)}</textarea>`);$('copy-fallback').select();}}
+function showSmall(title,html){$('small-title').textContent=title;$('small-body').innerHTML=html;if(!$('small-dialog').open)$('small-dialog').showModal();}
+$('small-close').onclick=()=>$('small-dialog').close();
+function customerForm(edit=false){
+  const c=edit?state.detail.customer:{};
+  showSmall(edit?'编辑客户':'新建客户',`<form id="customer-form"><label>客户姓名<input name="name" maxlength="120" value="${esc(c.name||'')}" required></label><label>电话 / 联系标识<input name="phone" maxlength="80" value="${esc(c.phone||'')}" placeholder="可以先留空"></label><label>所在城市<input name="city" maxlength="100" value="${esc(c.city||'')}"></label><label>沟通语言<input name="preferred_language" maxlength="80" value="${esc(c.preferred_language||'')}" placeholder="法语 / Darija / 英语"></label>${edit?`<label>跟进状态<select name="status">${['新询盘','等待资料','待报价','等待确认','已成交','跟进中'].map(v=>`<option ${v===c.status?'selected':''}>${v}</option>`).join('')}</select></label>`:''}<p>即使姓名相同，也不会自动合并为同一个客户。</p><div class="buttons"><button class="button primary">${edit?'保存':'建立档案'}</button></div></form>`);
+  $('customer-form').onsubmit=async e=>{e.preventDefault();const b=Object.fromEntries(new FormData(e.target));try{const result=edit?await api(`/api/customers/${c.id}`,{method:'PATCH',body:JSON.stringify(b)}):await post('/api/customers',b);$('small-dialog').close();await refreshCustomers();await selectCustomer(result.id);}catch(e){toast(e.message,true);}};
+}
+$('new-customer').onclick=()=>customerForm();$('edit-customer').onclick=()=>customerForm(true);
+$('customer-search').oninput=()=>{clearTimeout(customerSearchTimer);customerSearchTimer=setTimeout(renderCustomers,100);};
+$('chat-search').oninput=()=>{clearTimeout(chatSearchTimer);chatSearchTimer=setTimeout(async()=>{const id=state.selected,shipment=state.shipment,query=$('chat-search').value;try{const d=await api(`/api/customers/${id}?q=${encodeURIComponent(query)}&shipment_id=${encodeURIComponent(shipment||'')}`);if(state.selected===id && state.shipment===shipment && $('chat-search').value===query)renderMessages(scopedMessages(d.messages));}catch(e){toast(e.message,true);}},220);};
+function editMessage(m){
+  showSmall('校对已归档消息',`<form id="edit-message-form"><label>发送方<select name="speaker"><option value="customer" ${m.speaker==='customer'?'selected':''}>客户</option><option value="self" ${m.speaker==='self'?'selected':''}>我</option></select></label><label>原文<textarea name="original" dir="auto" rows="4" required>${esc(m.original)}</textarea></label><label>中文<textarea name="chinese" rows="4" required>${esc(m.chinese)}</textarea></label><p>修改后，这条消息的关联记忆将标记为待复核，旧回复建议会停用。</p><div class="buttons"><button class="button primary">保存校对</button></div></form>`);
+  $('edit-message-form').onsubmit=async e=>{e.preventDefault();const id=state.selected;const data={...m,...Object.fromEntries(new FormData(e.target))};try{await api(`/api/customers/${id}/messages/${m.id}`,{method:'PATCH',body:JSON.stringify(data)});$('small-dialog').close();await reloadDetail();toast('已保存校对，相关记忆需重新核对');}catch(e){toast(e.message,true);}};
+}
+function deleteMessage(m){
+  showSmall('删除这条消息',`<p>将删除消息及以它为来源的客户事实，旧回复也会停用。</p><div class="source-quote">${esc(m.chinese)}</div><div class="buttons"><button id="cancel-delete" class="button">取消</button><button id="confirm-delete" class="button danger">确认删除</button></div>`);
+  $('cancel-delete').onclick=()=>$('small-dialog').close();
+  $('confirm-delete').onclick=async()=>{try{await api(`/api/customers/${state.selected}/messages/${m.id}`,{method:'DELETE'});$('small-dialog').close();await reloadDetail();toast('消息已删除');}catch(e){toast(e.message,true);}};
+}
+function addFiles(files){
+  const allowed=['image/png','image/jpeg','image/webp'];
+  for(const file of files){
+    if(!allowed.includes(file.type)){toast('只支持 PNG、JPEG、WebP 截图',true);continue;}
+    if(file.size>8*1024**2 || state.files.reduce((s,x)=>s+x.file.size,0)+file.size>32*1024**2){toast('单张8MB、合计32MB以内',true);continue;}
+    if(state.files.length>=5){toast('一次最多5张截图',true);break;}
+    state.files.push({file,url:URL.createObjectURL(file)});
+  }
+  renderFiles();
+}
+function renderFiles(){
+  $('image-list').innerHTML=state.files.map((x,i)=>`<div class="image-thumb"><img src="${esc(x.url)}" alt="${esc(x.file.name)}"><button data-remove="${i}" aria-label="移除截图${i+1}">×</button></div>`).join('');
+  document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{const [x]=state.files.splice(Number(b.dataset.remove),1);URL.revokeObjectURL(x.url);renderFiles();});
+}
+$('file-input').onchange=e=>{addFiles(e.target.files);e.target.value='';};
+$('drop-zone').ondragover=e=>{e.preventDefault();$('drop-zone').classList.add('dragging');};
+$('drop-zone').ondragleave=()=>$('drop-zone').classList.remove('dragging');
+$('drop-zone').ondrop=e=>{e.preventDefault();$('drop-zone').classList.remove('dragging');addFiles(e.dataTransfer.files);};
+document.addEventListener('paste',e=>{if(document.querySelector('dialog[open]'))return;const files=[...(e.clipboardData?.items||[])].filter(x=>x.kind==='file').map(x=>x.getAsFile()).filter(Boolean);if(files.length){e.preventDefault();addFiles(files);setPanel('chat');}});
+const fileData=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve({name:file.name,data:reader.result});reader.onerror=()=>reject(new Error('图片读取失败'));reader.readAsDataURL(file);});
+function busy(value){state.busy=value;$('analyze-btn').disabled=value;$('analyze-btn').textContent=value?'千问正在读取…':'分析并翻译 ↗';}
+$('analyze-btn').onclick=async()=>{
+  if(state.busy)return;const text=$('message-input').value.trim();if(!text && !state.files.length)return toast('先上传截图或输入原文',true);
+  if(!state.status.qwen_configured){settings();return;}
+  const customer_id=state.selected,shipment_id=state.shipment;busy(true);
+  try{const images=await Promise.all(state.files.map(x=>fileData(x.file)));const draft=await post('/api/analyze',{text,images,customer_id,shipment_id});openReview(draft);await refreshDrafts();}
+  catch(e){toast(e.message,true);}finally{busy(false);}
+};
+async function demo(){try{const d=await post('/api/demo',{});openReview(d);await refreshDrafts();}catch(e){toast(e.message,true);}}
+$('demo-btn').onclick=demo;
+function openReview(draft){
+  state.draft=draft;
+  const a=draft.analysis;
+  const options=draft.demo?`<option value="new">新建演示客户</option>`:draft.customer_id?`<option value="${draft.customer_id}">${esc(state.customers.find(c=>c.id===draft.customer_id)?.name||'当前客户')}</option>`:`<option value="">请确认这是谁的聊天</option><option value="new">新建客户档案</option>${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.phone)}</option>`).join('')}`;
+  $('review-body').innerHTML=`${a.warnings.length?`<div class="warning-box">${a.warnings.map(esc).join('<br>')}</div>`:''}<section class="review-step"><h3>01 · 确认客户</h3><p class="identity-hint">${a.identity.name||a.identity.phone?`图片身份线索：${esc(a.identity.name)} ${esc(a.identity.phone)}。仅供参考，请自行核对。`:'没有足够的客户身份线索，请确认归属。'}${draft.customer_id?' 本次分析已使用所选客户记忆，如归属错误请关闭并重新分析。':''}</p><select id="review-target" required>${options}</select><div id="new-target-fields" ${draft.demo?'':'hidden'}><label>新客户姓名<input id="review-new-name" maxlength="120" value="${esc(a.identity.name||'')}" placeholder="请输入可辨识的客户姓名"></label><label>电话 / 联系标识<input id="review-new-phone" maxlength="80" value="${esc(a.identity.phone||'')}"></label></div></section><section class="review-step"><h3>02 · 校对原文与中文</h3>${a.messages.map((m,i)=>`<div class="review-message" data-review-index="${i}"><div class="review-message-head"><b>消息 ${i+1}</b><select data-m-speaker="${i}" aria-label="消息${i+1}发送方"><option value="customer" ${m.speaker==='customer'?'selected':''}>客户</option><option value="self" ${m.speaker==='self'?'selected':''}>我</option><option value="unknown" ${m.speaker==='unknown'?'selected':''}>需确认</option></select><input data-m-time="${i}" value="${esc(m.visible_time)}" placeholder="截图可见时间" aria-label="消息${i+1}时间"><label><input type="checkbox" data-m-uncertain="${i}" ${m.uncertain?'checked':''}>识别待留意</label></div><div class="review-grid"><label><span>原文 · ${esc(m.language)}</span><textarea data-m-original="${i}" dir="auto" maxlength="6000" required>${esc(m.original)}</textarea></label><label><span>中文理解</span><textarea data-m-chinese="${i}" maxlength="6000" required>${esc(m.chinese)}</textarea></label></div></div>`).join('')}</section><section class="review-step"><h3>03 · 选择写入的客户记忆</h3><p class="identity-hint">客户明确信息默认勾选；AI 推测默认不选。可修改内容，同字段变化保留历史。不同批次货物需谨慎核对。</p>${a.facts.length?a.facts.map((f,i)=>`<label class="fact-review"><input type="checkbox" data-f-check="${i}" ${f.certainty==='stated'?'checked':''}><div><p>${esc(labels[f.field])} · ${f.certainty==='stated'?'客户明确陈述':'AI推测'} · 来源消息${f.message_index+1}</p><input type="text" data-f-value="${i}" maxlength="1500" value="${esc(f.value)}"></div></label>`).join(''):'<p class="identity-hint">本次没有提取到新增事实。</p>'}</section>`;
+  $('review-target').insertAdjacentHTML('afterend',`<div class="review-shipment"><label>本批消息与货物事实归属<select id="review-shipment" aria-label="审核运输需求"><option value="">未分类 / 客户一般沟通</option></select></label><label id="review-shipment-title-wrap" hidden>新运输需求名称<input id="review-shipment-title" maxlength="120" placeholder="例如：家具 · 义乌到卡萨布兰卡"></label><p class="identity-hint">联系方式和语言保存在客户层级；货量、货物和运输范围按本次所选需求保存。若一张截图包含多票货物，请分别分析和审核。更改分析时的需求归属后，旧回复停用，需重新分析。</p></div>`);
+  $('review-shipment').onchange=()=>{const isNew=$('review-shipment').value==='new';$('review-shipment-title-wrap').hidden=!isNew;$('review-shipment-title').required=isNew;};
+  $('review-target').onchange=()=>{$('new-target-fields').hidden=$('review-target').value!=='new';$('review-new-name').required=$('review-target').value==='new';loadReviewShipments(draft);};
+  $('review-target').onchange();
+  if(!$('review-dialog').open)$('review-dialog').showModal();
+}
+async function loadReviewShipments(draft){
+  const target=$('review-target').value;
+  $('commit-btn').disabled=true;
+  try{
+    const shipments=target && target!=='new'?await api(`/api/customers/${target}/shipments`):[];
+    if(state.draft!==draft || $('review-target').value!==target)return;
+    const bound=!!draft.shipment_id;
+    $('review-shipment').innerHTML=bound?shipments.filter(s=>s.id===draft.shipment_id).map(s=>`<option value="${s.id}">${esc(s.title)}</option>`).join(''):`<option value="">未分类 / 客户一般沟通</option><option value="new">＋ 新建这票运输需求</option>${shipments.map(s=>`<option value="${s.id}">${esc(s.title)}</option>`).join('')}`;
+    if(bound && !shipments.some(s=>s.id===draft.shipment_id))throw new Error('草稿绑定的运输需求不可用，请重新分析');
+    $('review-shipment').disabled=bound;
+    $('review-shipment').onchange();
+    $('commit-btn').disabled=false;
+  }catch(e){toast(e.message,true);}
+}
+$('review-close').onclick=()=>$('review-dialog').close();
+$('review-dialog').addEventListener('close',()=>{toast('未保存的分析会保留在“待审核草稿”中');});
+$('review-form').onsubmit=async e=>{
+  e.preventDefault();const d=state.draft,target=$('review-target').value;
+  if(!target)return toast('请确认客户归属',true);
+  const messages=d.analysis.messages.map((m,i)=>({...m,speaker:document.querySelector(`[data-m-speaker="${i}"]`).value,original:document.querySelector(`[data-m-original="${i}"]`).value,chinese:document.querySelector(`[data-m-chinese="${i}"]`).value,visible_time:document.querySelector(`[data-m-time="${i}"]`).value,uncertain:document.querySelector(`[data-m-uncertain="${i}"]`).checked}));
+  if(messages.some(m=>m.speaker==='unknown'))return toast('请确认所有消息的发送方',true);
+  const accepted_facts=d.analysis.facts.flatMap((f,i)=>document.querySelector(`[data-f-check="${i}"]`).checked?[{index:i,value:document.querySelector(`[data-f-value="${i}"]`).value}]:[]);
+  const b={messages,accepted_facts,customer_id:target==='new'?null:target,new_customer:target==='new'?{name:$('review-new-name').value,phone:$('review-new-phone').value}:null};
+  const shipment=$('review-shipment').value;
+  b.shipment_id=shipment && shipment!=='new'?shipment:null;
+  b.new_shipment=shipment==='new'?{title:$('review-shipment-title').value}:null;
+  $('commit-btn').disabled=true;
+  try{const result=await post(`/api/drafts/${d.id}/commit`,b);$('review-dialog').close();state.draft=null;state.files.forEach(x=>URL.revokeObjectURL(x.url));state.files=[];renderFiles();$('message-input').value='';await refreshCustomers();await selectCustomer(result.customer_id,result.shipment_id||null);await refreshDrafts();toast(`已归档 ${result.inserted} 条新消息${result.skipped?`，跳过 ${result.skipped} 条重叠消息`:''}`);}
+  catch(e){toast(e.message,true);}finally{$('commit-btn').disabled=false;}
+};
+async function refreshDrafts(){const drafts=await api('/api/drafts');$('draft-count').textContent=drafts.length;return drafts;}
+$('recover-btn').onclick=async()=>{try{const drafts=await refreshDrafts();showSmall('待审核草稿',drafts.length?drafts.map(d=>`<div class="draft-item"><p>${d.demo?'固定演示':esc(state.customers.find(c=>c.id===d.customer_id)?.name||'未确认客户')}<br>${new Date(d.created_at).toLocaleString('zh-CN')}</p><div><button class="button" data-open-draft="${d.id}">审核</button> <button class="button danger" data-remove-draft="${d.id}">删除</button></div></div>`).join(''):'<p>没有待审核的草稿。</p>');document.querySelectorAll('[data-open-draft]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/drafts/${b.dataset.openDraft}`);$('small-dialog').close();openReview(d);}catch(e){toast(e.message,true);}});document.querySelectorAll('[data-remove-draft]').forEach(b=>b.onclick=async()=>{try{await api(`/api/drafts/${b.dataset.removeDraft}`,{method:'DELETE'});b.closest('.draft-item').remove();await refreshDrafts();toast('草稿及对应截图已删除');}catch(e){toast(e.message,true);}});}catch(e){toast(e.message,true);}};
+function settings(){
+  showSmall('千问接口与本地运行',`<p>真实截图分析需要你自己的阿里云百炼 API Key。密钥只写在项目根目录的 <code>.env</code>，不要发送到聊天里。</p><p>配置 <code>DASHSCOPE_API_KEY</code>、<code>DASHSCOPE_BASE_URL</code> 和 <code>QWEN_MODEL</code> 后重启服务。接口地址需从百炼控制台复制，地域、工作空间与密钥一致。</p><p>当前模型：<code>${esc(state.status.model)}</code><br>接口状态：${state.status.qwen_configured?'已配置（实际权限和效果仍需测试）':'待配置'}</p><p>没有密钥时，可先用固定示例验证“审核 → 档案 → 历史记忆”。固定示例不会识别你上传的截图。</p><button id="settings-demo" class="button primary full">体验固定示例</button><p class="identity-hint">源码说明及配置方法见项目 README.md。</p>`);
+  $('settings-demo').onclick=()=>{$('small-dialog').close();demo();};
+}
+$('settings-btn').onclick=settings;
+$('login-form').onsubmit=async e=>{e.preventDefault();try{await post('/api/login',Object.fromEntries(new FormData(e.target)));$('login-dialog').close();await init();}catch(e){$('login-error').textContent=e.message;}};
+$('login-dialog').addEventListener('cancel',e=>e.preventDefault());
+$('logout-btn').onclick=async()=>{try{await post('/api/logout',{});location.reload();}catch(e){toast(e.message,true);}};
+async function init(){
+  try{state.status=await api('/api/status');$('model-status').textContent=state.status.qwen_configured?'千问接口已配置':'千问接口待配置';$('model-status').classList.toggle('connected',state.status.qwen_configured);$('logout-btn').hidden=!state.status.password_required;if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}await refreshCustomers();await refreshDrafts();}
+  catch(e){toast(e.message,true);}
+}
+await init();

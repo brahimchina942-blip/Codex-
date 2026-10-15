@@ -1,0 +1,14 @@
+{
+  "name": "morocco-ai-crm",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Barsan 摩洛哥智能客户翻译助手：千问多模态、客户记忆、人工审核",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --watch --env-file-if-exists=.env server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "backup": "node --env-file-if-exists=.env scripts/backup.mjs"
+  }
+}
