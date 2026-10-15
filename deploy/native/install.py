@@ -244,6 +244,18 @@ def prepare_node():
         raise RuntimeError('Node.js版本检查失败。')
     return node
 
+def ask_password():
+    print('请设置网页访问密码（至少12位，输入时不显示；无需发给他人）。', flush=True)
+    while True:
+        password = getpass.getpass('访问密码: ')
+        if len(password) < 12 or any(c in password for c in '\r\n\0'):
+            print('密码至少12位，且不能包含换行；请重新输入。', flush=True)
+            continue
+        if password != getpass.getpass('再次输入: '):
+            print('两次密码不同；请重新输入。', flush=True)
+            continue
+        return password
+
 def install():
     command = nginx_command()
     run(command + ['-t'])
@@ -272,12 +284,7 @@ def install():
         s.bind(('127.0.0.1', PORT))
     if not (APPLICATION / 'server.mjs').is_file():
         raise RuntimeError('安装包缺少应用源码。')
-    print('请设置网页访问密码（至少12位，输入时不显示；无需发给他人）。', flush=True)
-    password = getpass.getpass('访问密码: ')
-    if len(password) < 12 or any(c in password for c in '\r\n\0'):
-        raise RuntimeError('密码至少12位，且不能包含换行。')
-    if password != getpass.getpass('再次输入: '):
-        raise RuntimeError('两次密码不同，未安装。')
+    password = ask_password()
     staged_node = prepare_node()
     run([staged_node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))])
     runtime = BASE / 'runtime' / staged_node.parent.parent.name
