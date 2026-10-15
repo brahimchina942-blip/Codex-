@@ -27,6 +27,7 @@ DATA = Path('/var/lib/morocco-ai-crm')
 CONFIG = Path('/etc/morocco-ai-crm')
 ACME = Path('/var/lib/morocco-ai-crm-acme')
 USER = 'moroccocrm'
+SERVICE_UNIT = Path('/etc/systemd/system/morocco-ai-crm.service')
 MARKER = '# Managed by Morocco AI CRM native deployment'
 PACKAGE = Path(__file__).resolve().parent
 APPLICATION = PACKAGE / 'app' if (PACKAGE / 'app/server.mjs').is_file() else PACKAGE.parent.parent
@@ -141,6 +142,9 @@ server {{
 '''
 
 def render_service(node):
+    # Node resolves the module URL to its real path. Passing the current symlink
+    # leaves argv[1] different and the application's entrypoint guard never runs.
+    entrypoint = (BASE / 'current/server.mjs').resolve(strict=True)
     return f'''{MARKER}
 [Unit]
 Description=Morocco AI CRM
@@ -151,7 +155,7 @@ User={USER}
 Group={USER}
 WorkingDirectory={BASE}/current
 EnvironmentFile={CONFIG}/app.env
-ExecStart={node} {BASE}/current/server.mjs
+ExecStart={node} {entrypoint}
 Restart=on-failure
 RestartSec=3
 UMask=0077
@@ -256,6 +260,43 @@ def ask_password():
             continue
         return password
 
+def wait_for_app():
+    for attempt in range(20):
+        try:
+            return app_status()
+        except (OSError, ValueError, RuntimeError):
+            if attempt == 19:
+                raise RuntimeError('应用未通过启动检查，请查看 journalctl -u morocco-ai-crm -n 40。')
+            time.sleep(1)
+
+def resume():
+    """Finish an initial installation interrupted before its Nginx site was created."""
+    state = json.loads((CONFIG / 'state.json').read_text())
+    unit = SERVICE_UNIT
+    destination = Path(state['site'])
+    managed(unit)
+    managed(destination)
+    if not unit.is_file() or not (CONFIG / 'app.env').is_file():
+        raise RuntimeError('初始安装文件不完整，停止；未修改密码或数据。')
+    if destination.exists():
+        raise RuntimeError('CRM网站配置已存在，请用 --status 查看，或 --https 继续；未覆盖现有配置。')
+    entrypoint = (BASE / 'current/server.mjs').resolve(strict=True)
+    if not entrypoint.is_relative_to((BASE / 'releases').resolve()) or not entrypoint.is_file():
+        raise RuntimeError('应用版本路径异常，停止。')
+    command = state['nginx']
+    run(command + ['-t'])
+    before = website_status()
+    atomic(unit, render_service(Path(state['node'])))
+    atomic(BASE / 'manage.py', Path(__file__).read_text())
+    run(['systemctl', 'daemon-reload'])
+    run(['systemctl', 'restart', 'morocco-ai-crm'])
+    wait_for_app()
+    install_nginx(command, destination, False)
+    if website_status() != before:
+        raise RuntimeError('现有官网的HTTP状态发生变化，请检查Nginx；未宣称上线。')
+    print('启动路径已修复，应用及密码保护检查通过；原官网HTTP状态保持一致。')
+    print('现有密码和客户数据已保留。新增DNS A记录crm → ' + SERVER_IP + '后，运行 python3 /opt/morocco-ai-crm/manage.py --https。')
+
 def install():
     command = nginx_command()
     run(command + ['-t'])
@@ -270,7 +311,7 @@ def install():
     for names in re.findall(r'\bserver_name\s+([^;]+);', output):
         if DOMAIN in names.split() and not destination.exists():
             raise RuntimeError('已发现该子域名的现有Nginx配置，停止以保留原配置。')
-    unit = Path('/etc/systemd/system/morocco-ai-crm.service')
+    unit = SERVICE_UNIT
     managed(unit)
     if (CONFIG / 'state.json').exists():
         raise RuntimeError('发现已有CRM安装，已保留数据。使用 --status 查看，或 --https 继续证书配置；不重复安装。')
@@ -327,14 +368,7 @@ def install():
     atomic(CONFIG / 'state.json', json.dumps({'nginx': command, 'site': str(destination), 'node': str(node)}, indent=2), 0o600)
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'enable', '--now', 'morocco-ai-crm'])
-    for attempt in range(20):
-        try:
-            app_status()
-            break
-        except (OSError, ValueError, RuntimeError):
-            if attempt == 19:
-                raise RuntimeError('应用未通过启动检查，请查看 journalctl -u morocco-ai-crm -n 40。')
-            time.sleep(1)
+    wait_for_app()
     install_nginx(command, destination, False)
     if website_status() != before:
         raise RuntimeError('现有官网的HTTP状态发生变化，请检查Nginx；未宣称上线。')
@@ -429,16 +463,19 @@ def backup():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', action='store_true')
+    parser.add_argument('--resume', action='store_true')
     parser.add_argument('--https', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--backup', action='store_true')
     args = parser.parse_args()
-    if sum((args.install, args.https, args.status, args.backup)) != 1:
-        parser.error('请选择 --install / --https / --status / --backup')
+    if sum((args.install, args.resume, args.https, args.status, args.backup)) != 1:
+        parser.error('请选择 --install / --resume / --https / --status / --backup')
     if os.geteuid() != 0:
         raise RuntimeError('请以root执行。')
     if args.install:
         install()
+    elif args.resume:
+        resume()
     elif args.https:
         https()
     elif args.backup:
