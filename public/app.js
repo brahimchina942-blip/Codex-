@@ -183,16 +183,55 @@ $('review-form').onsubmit=async e=>{
 };
 async function refreshDrafts(){const drafts=await api('/api/drafts');$('draft-count').textContent=drafts.length;return drafts;}
 $('recover-btn').onclick=async()=>{try{const drafts=await refreshDrafts();showSmall('待审核草稿',drafts.length?drafts.map(d=>`<div class="draft-item"><p>${d.demo?'固定演示':esc(state.customers.find(c=>c.id===d.customer_id)?.name||'未确认客户')}<br>${new Date(d.created_at).toLocaleString('zh-CN')}</p><div><button class="button" data-open-draft="${d.id}">审核</button> <button class="button danger" data-remove-draft="${d.id}">删除</button></div></div>`).join(''):'<p>没有待审核的草稿。</p>');document.querySelectorAll('[data-open-draft]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/drafts/${b.dataset.openDraft}`);$('small-dialog').close();openReview(d);}catch(e){toast(e.message,true);}});document.querySelectorAll('[data-remove-draft]').forEach(b=>b.onclick=async()=>{try{await api(`/api/drafts/${b.dataset.removeDraft}`,{method:'DELETE'});b.closest('.draft-item').remove();await refreshDrafts();toast('草稿及对应截图已删除');}catch(e){toast(e.message,true);}});}catch(e){toast(e.message,true);}};
-function settings(){
-  showSmall('千问接口与本地运行',`<p>真实截图分析需要你自己的阿里云百炼 API Key。密钥只写在项目根目录的 <code>.env</code>，不要发送到聊天里。</p><p>配置 <code>DASHSCOPE_API_KEY</code>、<code>DASHSCOPE_BASE_URL</code> 和 <code>QWEN_MODEL</code> 后重启服务。接口地址需从百炼控制台复制，地域、工作空间与密钥一致。</p><p>当前模型：<code>${esc(state.status.model)}</code><br>接口状态：${state.status.qwen_configured?'已配置（实际权限和效果仍需测试）':'待配置'}</p><p>没有密钥时，可先用固定示例验证“审核 → 档案 → 历史记忆”。固定示例不会识别你上传的截图。</p><button id="settings-demo" class="button primary full">体验固定示例</button><p class="identity-hint">源码说明及配置方法见项目 README.md。</p>`);
-  $('settings-demo').onclick=()=>{$('small-dialog').close();demo();};
+const qwenRegions = [
+  ['北京', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
+  ['新加坡', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'],
+  ['美国（弗吉尼亚）', 'https://dashscope-us.aliyuncs.com/compatible-mode/v1']
+];
+function renderModelStatus(){
+  $('model-status').textContent=state.status.qwen_configured?'千问接口已配置':'千问接口待配置';
+  $('model-status').classList.toggle('connected',state.status.qwen_configured);
 }
-$('settings-btn').onclick=settings;
+async function settings(){
+  if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}
+  try{
+    const current=await api('/api/settings/qwen');
+    const base=current.base_url.includes('YOUR_WORKSPACE_ID')?qwenRegions[0][1]:current.base_url;
+    const region=qwenRegions.some(([,url])=>url===base)?base:'custom';
+    showSmall('千问 API 设置',`<p>填写你的阿里云百炼 API Key，保存后即可分析聊天。密钥仅保存在服务器，不会回显。</p><form id="qwen-form" autocomplete="off"><label>API Key<input id="qwen-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="2048" placeholder="${current.has_key?'已保存；留空沿用原 Key':'粘贴百炼 API Key'}" ${current.has_key?'':'required'}></label><label>API Key 所属地域<select id="qwen-region">${qwenRegions.map(([name,url])=>`<option value="${url}" ${region===url?'selected':''}>${name}</option>`).join('')}<option value="custom" ${region==='custom'?'selected':''}>工作空间专用地址</option></select></label><p class="identity-hint">地域需与创建 API Key 时选择的地域一致。</p><details><summary>模型与接口地址</summary><label>模型 ID<input name="model" value="${esc(current.model)}" maxlength="120" required></label><label id="qwen-url-label" ${region==='custom'?'':'hidden'}>兼容接口地址<input id="qwen-url" type="url" value="${esc(base)}" placeholder="从百炼控制台复制"></label><p class="identity-hint">截图分析需使用支持图片与 JSON 输出、且账号已开通的模型。</p></details><p id="qwen-result" role="status" aria-live="polite"></p><div class="buttons"><button type="button" id="qwen-test" class="button quiet">测试连接</button><button id="qwen-save" class="button primary">保存设置</button></div><p class="identity-hint">测试会发送一条简短法语文本，产生少量模型调用用量；不会写入客户档案。</p></form>`);
+    const form=$('qwen-form');
+    $('qwen-region').onchange=()=>{$('qwen-url-label').hidden=$('qwen-region').value!=='custom';};
+    async function submit(test){
+      if(!form.reportValidity())return;
+      const value=Object.fromEntries(new FormData(form));
+      value.base_url=$('qwen-region').value==='custom'?$('qwen-url').value:$('qwen-region').value;
+      value.thinking=current.thinking;
+      const result=$('qwen-result');
+      $('qwen-test').disabled=true;$('qwen-save').disabled=true;
+      result.className='';result.textContent=test?'正在调用千问，请稍候…':'正在保存…';
+      try{
+        const response=await post(test?'/api/settings/qwen/test':'/api/settings/qwen',value);
+        if(test)result.textContent=`${response.message}${response.translation?' 示例翻译：'+response.translation:''}`;
+        else{
+          $('qwen-key').value='';$('qwen-key').required=false;$('qwen-key').placeholder='已保存；留空沿用原 Key';
+          result.textContent='已保存并立即生效。现在可以关闭设置，上传聊天截图或粘贴客户原话进行分析。';
+          state.status=await api('/api/status');renderModelStatus();
+        }
+      }catch(error){result.className='error-text';result.textContent=error.message;}
+      finally{value.api_key='';if($('qwen-test'))$('qwen-test').disabled=false;if($('qwen-save'))$('qwen-save').disabled=false;}
+    }
+    form.onsubmit=event=>{event.preventDefault();submit(false);};
+    $('qwen-test').onclick=()=>submit(true);
+  }catch(error){toast(error.message,true);}
+}
+$('settings-btn').onclick=()=>{if(location.hash==='#settings')settings();else location.hash='settings';};
+window.addEventListener('hashchange',()=>{if(location.hash==='#settings')settings();});
+$('small-dialog').addEventListener('close',()=>{if($('qwen-form')){$('qwen-key').value='';$('small-body').innerHTML='';if(location.hash==='#settings')history.replaceState(null,'',location.pathname+location.search);}});
 $('login-form').onsubmit=async e=>{e.preventDefault();try{await post('/api/login',Object.fromEntries(new FormData(e.target)));$('login-dialog').close();await init();}catch(e){$('login-error').textContent=e.message;}};
 $('login-dialog').addEventListener('cancel',e=>e.preventDefault());
 $('logout-btn').onclick=async()=>{try{await post('/api/logout',{});location.reload();}catch(e){toast(e.message,true);}};
 async function init(){
-  try{state.status=await api('/api/status');$('model-status').textContent=state.status.qwen_configured?'千问接口已配置':'千问接口待配置';$('model-status').classList.toggle('connected',state.status.qwen_configured);$('logout-btn').hidden=!state.status.password_required;if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}await refreshCustomers();await refreshDrafts();}
+  try{state.status=await api('/api/status');renderModelStatus();$('logout-btn').hidden=!state.status.password_required;if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}await refreshCustomers();await refreshDrafts();if(location.hash==='#settings')await settings();}
   catch(e){toast(e.message,true);}
 }
 await init();

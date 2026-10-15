@@ -6,6 +6,7 @@ import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { Store } from './lib/store.mjs';
 import { HttpError, object, str, decodeImages, validateMessages } from './lib/core.mjs';
 import { createQwen } from './lib/qwen.mjs';
+import { QwenSettings } from './lib/settings.mjs';
 import { DEMO } from './lib/demo.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +36,9 @@ async function readJson(req) {
 }
 const idPattern = '[a-f0-9-]{36}';
 export function createApp(config = readConfig(), options = {}) {
-  const store = options.store || new Store(config.dataDir), analyze = options.analyze || createQwen(config);
+  const store = options.store || new Store(config.dataDir), settings = new QwenSettings(config);
+  const analyze = options.analyze || (input => createQwen(settings.config(), options.qwenFetcher)(input));
+  let testingQwen = false;
   const sign = timestamp => createHmac('sha256', config.password).update(timestamp).digest('hex');
   const attempts = new Map();
   const active = new Set();
@@ -63,8 +66,8 @@ export function createApp(config = readConfig(), options = {}) {
       if (!publicNavigation && (req.headers.origin && req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site')) throw new HttpError(403, '不允许跨站请求。');
       if (method === 'GET' && path === '/api/status') return send(200, {
         authenticated: auth(req), password_required: !!config.password,
-        qwen_configured: !!(config.apiKey && config.baseUrl && !config.baseUrl.includes('YOUR_WORKSPACE_ID')),
-        model: config.model, version: '0.2.0'
+        qwen_configured: settings.view().configured,
+        model: settings.view().model, version: '0.2.1'
       });
       if (method === 'POST' && path === '/api/login') {
         const ip = req.socket.remoteAddress || 'local', entry = attempts.get(ip) || { count: 0, until: 0 };
@@ -81,6 +84,20 @@ export function createApp(config = readConfig(), options = {}) {
       }
       if (method === 'POST' && path === '/api/logout') return send(200, { ok: true }, { 'Set-Cookie': 'crm_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
       if (path.startsWith('/api/') && !auth(req)) throw new HttpError(401, '请先登录。');
+      if (method === 'GET' && path === '/api/settings/qwen') return send(200, settings.view());
+      if (method === 'POST' && path === '/api/settings/qwen') return send(200, settings.save(await readJson(req)));
+      if (method === 'POST' && path === '/api/settings/qwen/test') {
+        const candidate = settings.preview(await readJson(req));
+        if (testingQwen) throw new HttpError(429, '接口正在测试，请等待本次测试结束。');
+        testingQwen = true;
+        try {
+          const result = await createQwen(candidate, options.qwenFetcher)({
+            text: '客户原话（法语）：Bonjour, je souhaite envoyer 2 mètres cubes de meubles de Yiwu à Casablanca.', images: [],
+            context: { customer: null, shipment: null, facts: [], quotes: [], recent_messages: [], available_shipments: [] }
+          });
+          return send(200, { ok: true, message: '千问文本调用及结果格式验证通过。', translation: result.messages[0]?.chinese || result.summary });
+        } finally { testingQwen = false; }
+      }
       if (method === 'GET' && path === '/api/customers') return send(200, store.customers(new URL(req.url, origin).searchParams.get('q') || ''));
       if (method === 'POST' && path === '/api/customers') {
         const b = await readJson(req);

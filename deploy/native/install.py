@@ -206,7 +206,7 @@ def app_status():
         connection.request('GET', '/api/status', headers={'Host': DOMAIN})
         response = connection.getresponse()
         body = json.loads(response.read())
-        if response.status != 200 or body.get('version') != '0.2.0' or not body.get('password_required'):
+        if response.status != 200 or body.get('version') not in ('0.2.0', '0.2.1') or not body.get('password_required'):
             raise RuntimeError('应用版本或密码保护检查失败。')
         return body
     finally:
@@ -353,6 +353,62 @@ def repair_navigation():
     atomic(BASE / 'manage.py', Path(__file__).read_text())
     print('登录入口已修复，外站链接访问及接口保护检查通过。密码和客户数据已保留。')
 
+def upgrade():
+    """Install the settings release beside existing code, preserving private configuration/data."""
+    state = json.loads((CONFIG / 'state.json').read_text())
+    managed(SERVICE_UNIT)
+    current = BASE / 'current'
+    if not current.is_symlink() or not current.resolve().is_relative_to((BASE / 'releases').resolve()):
+        raise RuntimeError('现有版本路径异常，停止。')
+    previous_release = current.resolve()
+    previous_unit = SERVICE_UNIT.read_text()
+    status = app_status()
+    if status['version'] == '0.2.1':
+        print('网页千问设置入口已安装：https://' + DOMAIN + '/#settings')
+        return
+    if not (APPLICATION / 'lib/settings.mjs').is_file():
+        raise RuntimeError('升级包缺少新版设置功能源码。')
+    before = website_status()
+    node = Path(state['node'])
+    run([node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))])
+    backup()
+    release = Path(tempfile.mkdtemp(prefix='v0.2.1-', dir=BASE / 'releases'))
+    def omit(directory, names):
+        excluded = {'.git', '.env', 'data', 'backups', 'node_modules', 'test-results', '__pycache__'}
+        if Path(directory).resolve() == PACKAGE:
+            excluded.add('runtime')
+        return [name for name in names if name in excluded or name.endswith('.log')]
+    shutil.copytree(APPLICATION, release, ignore=omit, dirs_exist_ok=True)
+    for path in [release, *release.rglob('*')]:
+        if not path.is_symlink():
+            path.chmod(0o755 if path.is_dir() else 0o644)
+    def activate(target):
+        link = BASE / ('current-' + os.urandom(8).hex())
+        link.symlink_to(target)
+        try:
+            os.replace(link, current)
+        finally:
+            link.unlink(missing_ok=True)
+    try:
+        activate(release)
+        atomic(SERVICE_UNIT, render_service(node))
+        run(['systemctl', 'daemon-reload'])
+        run(['systemctl', 'restart', 'morocco-ai-crm'])
+        if wait_for_app()['version'] != '0.2.1':
+            raise RuntimeError('新版本检查失败。')
+        check_navigation()
+        if website_status() != before:
+            raise RuntimeError('官网HTTP状态变化，停止并恢复旧版本。')
+    except Exception:
+        activate(previous_release)
+        atomic(SERVICE_UNIT, previous_unit)
+        run(['systemctl', 'daemon-reload'])
+        run(['systemctl', 'restart', 'morocco-ai-crm'])
+        raise
+    atomic(BASE / 'manage.py', Path(__file__).read_text())
+    print('网页千问设置已更新；密码、客户数据、证书和原官网配置均已保留。')
+    print('打开 https://' + DOMAIN + '/#settings 登录后填写 API Key。')
+
 def resume():
     """Finish an initial installation interrupted before its Nginx site was created."""
     state = json.loads((CONFIG / 'state.json').read_text())
@@ -415,7 +471,7 @@ def install():
     runtime = BASE / 'runtime' / staged_node.parent.parent.name
     shutil.copytree(staged_node.parent.parent, runtime)
     node = runtime / 'bin/node'
-    source = BASE / 'releases/v0.2.0'
+    source = BASE / 'releases/v0.2.1'
     def omit(directory, names):
         excluded = {'.git', '.env', 'data', 'backups', 'node_modules', 'test-results', '__pycache__'}
         if Path(directory).resolve() == PACKAGE:
@@ -541,12 +597,13 @@ def main():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--repair-certbot', action='store_true')
     parser.add_argument('--repair-navigation', action='store_true')
+    parser.add_argument('--upgrade', action='store_true')
     parser.add_argument('--https', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--backup', action='store_true')
     args = parser.parse_args()
-    if sum((args.install, args.resume, args.repair_certbot, args.repair_navigation, args.https, args.status, args.backup)) != 1:
-        parser.error('请选择 --install / --resume / --repair-navigation / --repair-certbot / --https / --status / --backup')
+    if sum((args.install, args.resume, args.repair_certbot, args.repair_navigation, args.upgrade, args.https, args.status, args.backup)) != 1:
+        parser.error('请选择 --install / --resume / --upgrade / --repair-navigation / --repair-certbot / --https / --status / --backup')
     if os.geteuid() != 0:
         raise RuntimeError('请以root执行。')
     if args.install:
@@ -557,6 +614,8 @@ def main():
         repair_certbot()
     elif args.repair_navigation:
         repair_navigation()
+    elif args.upgrade:
+        upgrade()
     elif args.https:
         https()
     elif args.backup:
