@@ -206,7 +206,7 @@ def app_status():
         connection.request('GET', '/api/status', headers={'Host': DOMAIN})
         response = connection.getresponse()
         body = json.loads(response.read())
-        if response.status != 200 or body.get('version') not in ('0.2.0', '0.2.1', '0.2.2') or not body.get('password_required'):
+        if response.status != 200 or body.get('version') not in ('0.2.0', '0.2.1', '0.2.2', '0.2.3') or not body.get('password_required'):
             raise RuntimeError('应用版本或密码保护检查失败。')
         return body
     finally:
@@ -363,8 +363,8 @@ def upgrade():
     previous_release = current.resolve()
     previous_unit = SERVICE_UNIT.read_text()
     status = app_status()
-    if status['version'] == '0.2.2':
-        print('自定义多语言回复和分区记忆总结已安装：https://' + DOMAIN)
+    if status['version'] == '0.2.3':
+        print('回复区收起按钮和双语记忆已安装：https://' + DOMAIN)
         return
     if not (APPLICATION / 'lib/memory.mjs').is_file():
         raise RuntimeError('升级包缺少新版记忆总结源码。')
@@ -372,7 +372,7 @@ def upgrade():
     node = Path(state['node'])
     run([node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))])
     backup()
-    release = Path(tempfile.mkdtemp(prefix='v0.2.2-', dir=BASE / 'releases'))
+    release = Path(tempfile.mkdtemp(prefix='v0.2.3-', dir=BASE / 'releases'))
     def omit(directory, names):
         excluded = {'.git', '.env', 'data', 'backups', 'node_modules', 'test-results', '__pycache__'}
         if Path(directory).resolve() == PACKAGE:
@@ -394,7 +394,7 @@ def upgrade():
         atomic(SERVICE_UNIT, render_service(node))
         run(['systemctl', 'daemon-reload'])
         run(['systemctl', 'restart', 'morocco-ai-crm'])
-        if wait_for_app()['version'] != '0.2.2':
+        if wait_for_app()['version'] != '0.2.3':
             raise RuntimeError('新版本检查失败。')
         check_navigation()
         if website_status() != before:
@@ -406,7 +406,7 @@ def upgrade():
         run(['systemctl', 'restart', 'morocco-ai-crm'])
         raise
     atomic(BASE / 'manage.py', Path(__file__).read_text())
-    print('自定义多语言回复和分区记忆总结已更新；千问Key、密码、客户数据、证书和原官网配置均已保留。')
+    print('回复区收起按钮和原文/中文记忆对照已更新；千问Key、密码、客户数据、证书和原官网配置均已保留。')
     print('打开 https://' + DOMAIN + ' 查看新功能。')
 
 def resume():
@@ -471,7 +471,7 @@ def install():
     runtime = BASE / 'runtime' / staged_node.parent.parent.name
     shutil.copytree(staged_node.parent.parent, runtime)
     node = runtime / 'bin/node'
-    source = BASE / 'releases/v0.2.2'
+    source = BASE / 'releases/v0.2.3'
     def omit(directory, names):
         excluded = {'.git', '.env', 'data', 'backups', 'node_modules', 'test-results', '__pycache__'}
         if Path(directory).resolve() == PACKAGE:

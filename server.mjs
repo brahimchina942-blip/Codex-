@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { Store } from './lib/store.mjs';
 import { HttpError, object, str, decodeImages, validateMessages } from './lib/core.mjs';
-import { createQwen, createReplyTranslator, TRANSLATION_LANGUAGES } from './lib/qwen.mjs';
+import { createQwen, createReplyTranslator, createMemoryTranslator, TRANSLATION_LANGUAGES } from './lib/qwen.mjs';
+import { memoryFactKey } from './lib/memory.mjs';
 import { QwenSettings } from './lib/settings.mjs';
 import { DEMO } from './lib/demo.mjs';
 
@@ -42,6 +43,14 @@ export function createApp(config = readConfig(), options = {}) {
   const sign = timestamp => createHmac('sha256', config.password).update(timestamp).digest('hex');
   const attempts = new Map();
   const active = new Set();
+  const memoryTranslations = new Map(), translatingCustomers = new Set();
+  function memoryDetails(id, query = '', shipmentId = null) {
+    const detail = store.detail(id, query, shipmentId);
+    for (const section of detail.memory.sections) for (const item of section.items) {
+      item.chinese = memoryTranslations.get(item.key) || item.chinese;
+    }
+    return detail;
+  }
   function auth(req) {
     if (!config.password) return true;
     const token = req.headers.cookie?.split(';').map(x=>x.trim()).find(x=>x.startsWith('crm_session='))?.slice(12) || '';
@@ -67,7 +76,7 @@ export function createApp(config = readConfig(), options = {}) {
       if (method === 'GET' && path === '/api/status') return send(200, {
         authenticated: auth(req), password_required: !!config.password,
         qwen_configured: settings.view().configured,
-        model: settings.view().model, version: '0.2.2'
+        model: settings.view().model, version: '0.2.3'
       });
       if (method === 'POST' && path === '/api/login') {
         const ip = req.socket.remoteAddress || 'local', entry = attempts.get(ip) || { count: 0, until: 0 };
@@ -113,6 +122,29 @@ export function createApp(config = readConfig(), options = {}) {
         return send(201, store.createCustomer({ name: str(b.name,120,true), phone: str(b.phone||'',80), city: str(b.city||'',100), preferred_language: str(b.preferred_language||'',80) }));
       }
       let match;
+      if ((match = path.match(new RegExp(`^/api/customers/(${idPattern})/memory/translate$`))) && method === 'POST') {
+        const id = match[1], body = await readJson(req), detail = memoryDetails(id);
+        if (body.revision !== detail.memory.revision) throw new HttpError(409, '客户记忆已更新，请刷新后重试。');
+        if (!Array.isArray(body.fact_ids) || !body.fact_ids.length || body.fact_ids.length > 10 || new Set(body.fact_ids).size !== body.fact_ids.length)
+          throw new HttpError(400, '记忆翻译范围无效。');
+        const facts = body.fact_ids.map(factId => {
+          const fact = detail.facts.find(fact => fact.id === factId && fact.state === 'active');
+          if (!fact) throw new HttpError(400, '记忆必须属于当前客户，且来源仍有效。');
+          return fact;
+        });
+        const missing = facts.filter(fact => !memoryTranslations.has(memoryFactKey(fact)));
+        if (missing.length) {
+          if (translatingCustomers.has(id) || active.size >= 2) throw new HttpError(429, '已有请求正在进行，请稍后重试。');
+          const key = Symbol(); active.add(key); translatingCustomers.add(id);
+          try {
+            const translations = await createMemoryTranslator(settings.config(), options.qwenFetcher)(missing);
+            if (store.detail(id).memory.revision !== body.revision) throw new HttpError(409, '翻译期间来源已更新，请刷新后重试。');
+            for (const result of translations) memoryTranslations.set(memoryFactKey(missing.find(fact=>fact.id===result.fact_id)), result.chinese);
+            while (memoryTranslations.size > 5000) memoryTranslations.delete(memoryTranslations.keys().next().value);
+          } finally { active.delete(key); translatingCustomers.delete(id); }
+        }
+        return send(200, { revision: body.revision, translations: facts.map(fact=>({fact_id:fact.id,chinese:memoryTranslations.get(memoryFactKey(fact))})) });
+      }
       if ((match = path.match(new RegExp(`^/api/customers/(${idPattern})/shipments$`)))) {
         if (method === 'GET') return send(200, store.shipments(match[1]));
         if (method === 'POST') return send(201, store.createShipment(match[1], await readJson(req)));
@@ -126,7 +158,7 @@ export function createApp(config = readConfig(), options = {}) {
       if ((match = path.match(new RegExp(`^/api/customers/(${idPattern})$`)))) {
         if (method === 'GET') {
           const params = new URL(req.url, origin).searchParams;
-          return send(200, store.detail(match[1], params.get('q') || '', params.get('shipment_id') || null));
+          return send(200, memoryDetails(match[1], params.get('q') || '', params.get('shipment_id') || null));
         }
         if (method === 'PATCH') {
           const b = await readJson(req), patch = {};

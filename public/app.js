@@ -30,7 +30,7 @@ async function selectCustomer(id,shipment=null){
   state.selected=id;state.shipment=shipment;const version=++selectionVersion;renderCustomers();setPanel('chat');
   $('chat-area').innerHTML='<div class="loading-block">读取客户记忆…</div>';
   $('replies').hidden=true;$('profile-content').innerHTML='<div class="loading-block">读取客户记忆…</div>';
-  try{const detail=await api(`/api/customers/${id}?shipment_id=${encodeURIComponent(shipment||'')}`);if(version!==selectionVersion)return;state.detail=detail;renderDetail();}
+  try{const detail=await api(`/api/customers/${id}?shipment_id=${encodeURIComponent(shipment||'')}`);if(version!==selectionVersion)return;state.detail=detail;renderDetail();loadMemoryChinese(detail);}
   catch(e){toast(e.message,true);}
 }
 async function reloadDetail(){if(state.selected)await selectCustomer(state.selected,state.shipment);await refreshCustomers();}
@@ -53,6 +53,35 @@ function renderMessages(messages){
   document.querySelectorAll('[data-image]').forEach(b=>b.onclick=()=>showSmall('原始截图',`<img src="/api/screenshots/${b.dataset.image}" alt="原始聊天截图">`));
   $('chat-area').scrollTop=$('chat-area').scrollHeight;
 }
+function memorySectionHtml(section){
+  const rows=(section.items||[]).map(item=>`<article class="bilingual-memory" data-memory-fact="${item.fact_id}"><div class="bilingual-memory-label">${esc(item.label)}${item.certainty==='inferred'?'<span class="warning-tag">AI推测</span>':''}</div><p class="memory-original-caption">${esc(item.original_label||'资料原文')}</p><p class="memory-original" dir="auto">${esc(item.original)}</p><div class="memory-chinese" dir="ltr"><span class="memory-chinese-label">${item.original_label==='来源消息原文'?'中文记忆要点':'中文解释'}</span><p data-memory-chinese="${item.fact_id}">${esc(item.chinese||'正在补充中文解释…')}</p></div><button class="fact-source" data-source="${item.fact_id}">查看消息来源 ↗</button></article>`).join('');
+  return `<div class="memory-overview-group"><h4>${esc(section.title)}${section.status?`<span>${esc(section.status)}</span>`:''}</h4>${rows||`<p>${esc(section.text)}</p>`}${section.items?.length&&section.note?`<p class="memory-meta">${esc(section.note)}</p>`:''}</div>`;
+}
+const memoryJobs=new Set();
+async function loadMemoryChinese(detail){
+  if(!detail?.memory)return;
+  const id=detail.customer.id,revision=detail.memory.revision,job=id+':'+revision;
+  const pending=detail.memory.sections.flatMap(section=>section.items||[]).filter(item=>!item.chinese);
+  const current=()=>state.selected===id&&state.detail?.memory?.revision===revision;
+  if(!pending.length||memoryJobs.has(job))return;
+  if(!state.status.qwen_configured){if(current()&&$('memory-translation-status'))$('memory-translation-status').textContent='配置千问后可补充旧外文记忆的中文解释。';return;}
+  memoryJobs.add(job);
+  if(current()&&$('memory-translation-status'))$('memory-translation-status').textContent='正在整理中文对照，原记录保持不变…';
+  if(current()&&$('retry-memory-translation'))$('retry-memory-translation').hidden=true;
+  try{
+    for(let offset=0;offset<pending.length;offset+=10){
+      const result=await post(`/api/customers/${id}/memory/translate`,{revision,fact_ids:pending.slice(offset,offset+10).map(item=>item.fact_id)});
+      if(!current())return;
+      for(const translation of result.translations){
+        const item=state.detail.memory.sections.flatMap(section=>section.items||[]).find(item=>item.fact_id===translation.fact_id);
+        if(!item)continue;item.chinese=translation.chinese;
+        document.querySelectorAll(`[data-memory-chinese="${translation.fact_id}"]`).forEach(element=>{element.textContent=translation.chinese;});
+      }
+    }
+    if(current()&&$('memory-translation-status'))$('memory-translation-status').textContent='';
+  }catch(error){if(current()&&$('memory-translation-status')){$('memory-translation-status').textContent=error.message;$('retry-memory-translation').hidden=false;}}
+  finally{memoryJobs.delete(job);}
+}
 function renderProfile(customer,facts,latest){
   const detail=state.detail,allFacts=detail.facts,active=allFacts.filter(f=>f.state==='active'),old=allFacts.filter(f=>f.state!=='active');
   const memory=detail.memory;
@@ -60,7 +89,8 @@ function renderProfile(customer,facts,latest){
   const pending=state.draft?.customer_id===customer.id&&(state.draft.shipment_id||null)===state.shipment?state.draft:null;
   const batch=pending?{...pending.analysis,screenshots:pending.screenshots,demo:pending.demo,created_at:pending.created_at}:latest;
   const imageCount=batch?.screenshots?.length||0;
-  $('profile-content').innerHTML=`<section class="memory-overview" aria-label="全部记录的记忆总结"><div class="memory-section-head"><h3>全部记录的记忆总结</h3><span class="small-badge">自动汇总</span></div><p class="memory-meta">${esc(memory?.introduction||'尚无已归档记忆')}</p>${memory?.sections.length?memory.sections.map(section=>`<div class="memory-overview-group"><h4>${esc(section.title)}${section.status?`<span>${esc(section.status)}</span>`:''}</h4><p>${esc(section.text)}</p></div>`).join(''):'<p class="memory-empty">确认并归档聊天后，这里会汇总该客户的全部有效记忆。</p>'}${memory?.needs_review_count?`<p class="warning-tag memory-meta">${memory.needs_review_count} 项记忆的来源有变更，已从当前总结排除，等待复核。</p>`:''}<details class="memory-sources"><summary>查看记忆来源 · ${active.length} 项</summary>${active.map(factHtml).join('')||'<p class="memory-empty">暂无有效记忆</p>'}</details></section><section class="latest-summary" aria-label="本次聊天图片总结"><div class="memory-section-head"><h3>本次聊天图片总结</h3></div>${batch?`<p class="memory-meta">${pending?'待确认 · 尚未写入客户记忆':'最近一次已归档'} · ${imageCount?imageCount+' 张图片':'文本聊天'}${batch.demo?' · 固定演示':''}</p>${batch.stale?'<p class="warning-tag">消息、报价或运输需求有变更，本次旧总结已停用，请重新分析。</p>':`<p class="batch-summary-text">${esc(batch.summary||'本次没有可用的沟通总结。')}</p>`}`:'<p class="memory-empty">分析当前客户的聊天截图后，这里显示本次总结；上方保留全部已归档记忆。</p>'}</section><details class="memory-tools"><summary>客户资料、运输需求与历史记忆</summary><div class="profile-details"><p><span>联系信息</span><strong>${esc(customer.phone||'未记录')}</strong></p><p><span>归档消息</span><strong>${memory?.message_count||0} 条</strong></p><p><span>客户状态</span><strong>${esc(customer.status)}</strong></p></div><div id="shipment-profile"></div>${old.length?`<details><summary class="section-label">历史与待复核 · ${old.length} 项</summary>${old.map(factHtml).join('')}</details>`:''}<div class="section-label">数据留档</div><button id="export-customer" class="button quiet full">导出客户文字档案 ↓</button></details>`;
+  $('profile-content').innerHTML=`<section class="memory-overview" aria-label="全部记录的记忆总结"><div class="memory-section-head"><h3>全部记录的记忆总结</h3><span class="small-badge">自动汇总</span></div><p class="memory-meta">${esc(memory?.introduction||'尚无已归档记忆')}</p>${memory?.sections.length?memory.sections.map(memorySectionHtml).join(''):'<p class="memory-empty">确认并归档聊天后，这里会汇总该客户的全部有效记忆。</p>'}${memory?.needs_review_count?`<p class="warning-tag memory-meta">${memory.needs_review_count} 项记忆的来源有变更，已从当前总结排除，等待复核。</p>`:''}<p id="memory-translation-status" class="memory-meta" role="status" aria-live="polite"></p><button type="button" id="retry-memory-translation" class="text-button" hidden>重试中文解释</button><details class="memory-sources"><summary>查看记忆来源 · ${active.length} 项</summary>${active.map(factHtml).join('')||'<p class="memory-empty">暂无有效记忆</p>'}</details></section><section class="latest-summary" aria-label="本次聊天图片总结"><div class="memory-section-head"><h3>本次聊天图片总结</h3></div>${batch?`<p class="memory-meta">${pending?'待确认 · 尚未写入客户记忆':'最近一次已归档'} · ${imageCount?imageCount+' 张图片':'文本聊天'}${batch.demo?' · 固定演示':''}</p>${batch.stale?'<p class="warning-tag">消息、报价或运输需求有变更，本次旧总结已停用，请重新分析。</p>':`<p class="batch-summary-text">${esc(batch.summary||'本次没有可用的沟通总结。')}</p>`}`:'<p class="memory-empty">分析当前客户的聊天截图后，这里显示本次总结；上方保留全部已归档记忆。</p>'}</section><details class="memory-tools"><summary>客户资料、运输需求与历史记忆</summary><div class="profile-details"><p><span>联系信息</span><strong>${esc(customer.phone||'未记录')}</strong></p><p><span>归档消息</span><strong>${memory?.message_count||0} 条</strong></p><p><span>客户状态</span><strong>${esc(customer.status)}</strong></p></div><div id="shipment-profile"></div>${old.length?`<details><summary class="section-label">历史与待复核 · ${old.length} 项</summary>${old.map(factHtml).join('')}</details>`:''}<div class="section-label">数据留档</div><button id="export-customer" class="button quiet full">导出客户文字档案 ↓</button></details>`;
+  $('retry-memory-translation').onclick=()=>loadMemoryChinese(state.detail);
   document.querySelectorAll('[data-source]').forEach(b=>b.onclick=()=>{const f=allFacts.find(f=>f.id===b.dataset.source);showSmall('记忆来源',`<p>${esc(labels[f.field])}：${esc(f.value)}</p><div class="source-quote" dir="auto">${esc(f.evidence)}</div><p class="translation">${esc(f.evidence_chinese)}</p><p>${esc(f.evidence_time||'原截图无可见时间')}</p>`);});
   $('export-customer').onclick=()=>{const a=document.createElement('a');a.href=`/api/customers/${customer.id}/export`;a.download='customer-export.json';a.click();};
   const shipment=detail.shipments.find(s=>s.id===state.shipment),quotes=detail.quotes.filter(q=>q.shipment_id===state.shipment);
@@ -85,6 +115,7 @@ $('shipment-select').onchange=()=>selectCustomer(state.selected,$('shipment-sele
 $('new-shipment').onclick=()=>shipmentForm();
 const replyLanguages=[['en','英语'],['fr','法语'],['ar','阿拉伯语'],['darija','摩洛哥达里贾'],['es','西班牙语']];
 const customReplies=new Map();
+let repliesCollapsed=false;
 const replyScope=()=>`${state.selected||'new'}:${state.shipment||'general'}`;
 function customReplyState(){const key=replyScope();if(!customReplies.has(key))customReplies.set(key,{text:'',languages:['en'],translations:[],busy:false,error:''});return customReplies.get(key);}
 function renderReplies(latest){
@@ -92,8 +123,14 @@ function renderReplies(latest){
   $('replies').hidden=false;
   const reply=replies.find(r=>r.style===state.replyStyle)||replies[0];
   const tabs=`${replies.map(r=>`<button data-reply="${r.style}" class="${!custom&&reply.style===r.style?'active':''}">${styles[r.style]}</button>`).join('')}<button data-reply="custom" class="${custom?'active':''}">自定义回复</button>`;
-  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest?.demo?'· 固定演示':''}</h3><div class="reply-tabs">${tabs}</div></div><div id="reply-content"></div>`;
-  document.querySelectorAll('[data-reply]').forEach(b=>b.onclick=()=>{state.replyStyle=b.dataset.reply;renderReplies(latest);});
+  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest?.demo?'· 固定演示':''}</h3><div class="reply-tabs">${tabs}<button type="button" id="toggle-replies" class="reply-collapse" aria-controls="reply-content"></button></div></div><div id="reply-content"></div>`;
+  function applyCollapse(){
+    $('reply-content').hidden=repliesCollapsed;$('replies').classList.toggle('is-collapsed',repliesCollapsed);
+    const button=$('toggle-replies'),label=repliesCollapsed?'展开 AI 回复参考':'收起 AI 回复参考';
+    button.textContent=repliesCollapsed?'⌄':'⌃';button.title=label;button.setAttribute('aria-label',label);button.setAttribute('aria-expanded',String(!repliesCollapsed));
+  }
+  $('toggle-replies').onclick=()=>{repliesCollapsed=!repliesCollapsed;applyCollapse();};applyCollapse();
+  document.querySelectorAll('[data-reply]').forEach(b=>b.onclick=()=>{state.replyStyle=b.dataset.reply;repliesCollapsed=false;renderReplies(latest);});
   if(!custom){
     if(latest.stale){$('reply-content').innerHTML='<div class="warning-box">消息、报价或运输需求有变更，旧回复已停用。请重新分析，或使用自定义回复翻译你要表达的内容。</div>';return;}
     $('reply-content').innerHTML=`<p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><button id="copy-reply" class="button">复制回复</button></div>`;

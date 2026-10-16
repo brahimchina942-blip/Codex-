@@ -52,3 +52,15 @@
 .profile-content>.memory-overview,.profile-content>.latest-summary{flex:1;min-height:0;overflow:auto;padding-right:4px}
 .memory-tools{flex-shrink:0;max-height:45%;overflow:auto}
 .memory-tools[open]{flex:1;min-height:0}
+.reply-tabs .reply-collapse{font-size:18px;line-height:1;width:26px;height:26px;padding:0;flex-shrink:0;color:var(--green);border-color:#cbded2}
+.replies.is-collapsed{max-height:none!important;padding-top:8px;padding-bottom:8px;flex-shrink:0}
+.replies.is-collapsed .reply-head{margin-bottom:0}
+.bilingual-memory{padding:11px 0;border-bottom:1px solid #d1e1d7}
+.bilingual-memory:last-child{border-bottom:0;padding-bottom:0}
+.bilingual-memory-label{font-size:10px;color:var(--green);display:flex;align-items:center;justify-content:space-between;gap:8px;line-height:1.8}
+.bilingual-memory .memory-original{font-size:12px;line-height:1.85;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.memory-chinese{margin-top:8px;padding:8px 10px;background:#ffffffa8;border-radius:6px;text-align:left}
+.memory-chinese-label{font-size:9px;color:#6c8877}
+.memory-chinese p{font-size:12px;line-height:1.85;color:#365e49;margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere}
+.bilingual-memory .fact-source{margin-top:7px}
+.bilingual-memory .memory-original-caption{font-size:9px;line-height:1.6;color:var(--muted);margin-top:6px}

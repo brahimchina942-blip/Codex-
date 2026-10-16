@@ -71,3 +71,9 @@
 客户详情新增 `memory`：基于该客户全部已归档消息、有效事实和运输需求生成，包含message_count/record_count/shipment_count/needs_review_count和sections。每个section包含归属、标题、文字概括及fact_ids；搜索条件和当前选择的票不缩小此汇总，运输需求始终分组。未归档草稿不进入汇总，superseded/needs_review事实不作为当前结论。
 
 `latest`仍为当前所选票（或未分类）的最近一次已归档分析，新增screenshots列表，供展示本次图片数量和摘要。前端对归属于当前客户和所选票的待审草稿单独显示待确认摘要，不写入正式记忆。
+
+## 双语记忆
+
+详情 `memory` 新增revision，sections新增items；每项包括fact_id、原文original、中文chinese、字段标签label和certainty。已有中文直接显示，外文缺少译文时chinese为null；服务端会返回当前进程已缓存的有效中文。
+
+登录后 `POST /api/customers/:id/memory/translate`，输入 `{revision:"详情中的版本",fact_ids:["当前客户的有效事实ID"]}`，一次最多10项。仅翻译已保存的事实值，返回 `{revision,translations:[{fact_id,chinese}]}`，不写入客户资料。既有缓存可复用；来源变更后重新计算版本，提交旧版本或翻译途中发生变更均返回409。拒绝其他客户、已失效事实、缺少/重复ID的模型结果，沿用登录、同源和并发保护。翻译缓存不包含API Key，不作为正式事实或数据库备份的一部分。
