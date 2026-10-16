@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync,statSync,readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join,resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../lib/store.mjs';
@@ -91,7 +92,7 @@ test('资料库生成期间的改动不覆盖已保存回复；未知资料引�
 test('备份包含公共资料库和客户数据库，独立恢复后仍有资料条目',t=>{
   const dir=mkdtempSync(join(tmpdir(),'crm-reference-backup-')),store=new Store(dir);t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
   const doc=store.library.save(company);store.createCustomer({name:'备份客户'});
-  execFileSync(process.execPath,[resolve('scripts/backup.mjs')],{cwd:dir,env:{...process.env,DATA_DIR:dir},stdio:'pipe'});
+  execFileSync(process.execPath,[fileURLToPath(new URL('../scripts/backup.mjs',import.meta.url))],{cwd:dir,env:{...process.env,DATA_DIR:dir},stdio:'pipe'});
   const target=join(dir,'backups',readdirSync(join(dir,'backups'))[0]);
   const knowledge=new DatabaseSync(join(target,'company-knowledge.sqlite'),{readOnly:true});try{assert.equal(knowledge.prepare('SELECT title FROM entries WHERE id=?').get(doc.id).title,company.title);}finally{knowledge.close();}
   assert.equal(statSync(join(target,'company-knowledge.sqlite')).mode&0o777,0o600);assert.ok(statSync(join(target,'crm.sqlite')).size>0);

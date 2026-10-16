@@ -39,10 +39,10 @@ NODE_HASHES = {
     'arm64': 'fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143',
 }
 
-def run(args, capture=False):
+def run(args, capture=False, cwd=None):
     return subprocess.run([str(x) for x in args], check=True, text=True,
                           stdout=subprocess.PIPE if capture else None,
-                          stderr=subprocess.PIPE if capture else None)
+                          stderr=subprocess.PIPE if capture else None, cwd=cwd)
 
 def atomic(path, text, mode=0o644):
     path = Path(path)
@@ -370,7 +370,7 @@ def upgrade():
         raise RuntimeError('升级包缺少公共资料库源码。')
     before = website_status()
     node = Path(state['node'])
-    run([node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))])
+    run([node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))], cwd=APPLICATION)
     backup()
     release = Path(tempfile.mkdtemp(prefix='v0.2.4-', dir=BASE / 'releases'))
     def omit(directory, names):
@@ -467,7 +467,7 @@ def install():
         raise RuntimeError('安装包缺少应用源码。')
     password = ask_password()
     staged_node = prepare_node()
-    run([staged_node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))])
+    run([staged_node, '--test', *sorted((APPLICATION / 'test').glob('*.test.mjs'))], cwd=APPLICATION)
     runtime = BASE / 'runtime' / staged_node.parent.parent.name
     shutil.copytree(staged_node.parent.parent, runtime)
     node = runtime / 'bin/node'
