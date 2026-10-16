@@ -64,3 +64,21 @@
 .memory-chinese p{font-size:12px;line-height:1.85;color:#365e49;margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere}
 .bilingual-memory .fact-source{margin-top:7px}
 .bilingual-memory .memory-original-caption{font-size:9px;line-height:1.6;color:var(--muted);margin-top:6px}
+.reply-heading{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.reply-heading .reference-library-button{font-size:10px;padding:4px 7px;color:var(--green);border-color:#cee0d4}
+.reply-copy-buttons{display:flex;flex-wrap:wrap;gap:7px;justify-content:flex-end}
+.reply-reference-sources{font-size:10px;color:var(--muted);line-height:1.8;margin-top:8px}
+.library-dialog{width:min(680px,94vw)}
+.reference-toolbar{display:flex;align-items:center;gap:10px;margin:15px 0}
+.reference-toolbar input{margin-top:0;min-width:0;flex:1}
+.reference-toolbar button{flex-shrink:0;font-size:12px}
+.reference-card{border:1px solid var(--line);border-radius:9px;padding:14px;margin:12px 0;background:#fbfcfa}
+.reference-card-title{display:flex;align-items:center;justify-content:space-between;gap:9px}
+.reference-card-title strong{font-size:13px;overflow-wrap:anywhere}
+.reference-card p{margin:8px 0;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.reference-card .reference-state{font-size:10px;color:var(--muted)}
+.reference-card-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:7px;margin-top:10px}
+.reference-card-actions button{font-size:11px;padding:6px 10px}
+.small-dialog .reference-check{display:flex;align-items:center;gap:8px}
+.small-dialog .reference-check input{width:16px;height:16px;margin:0;accent-color:var(--green)}
+@media(max-width:900px){.reference-toolbar{flex-wrap:wrap}.reference-toolbar input{min-width:150px}.reply-copy{align-items:flex-start}}

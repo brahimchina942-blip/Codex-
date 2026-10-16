@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { Store } from './lib/store.mjs';
 import { HttpError, object, str, decodeImages, validateMessages } from './lib/core.mjs';
-import { createQwen, createReplyTranslator, createMemoryTranslator, TRANSLATION_LANGUAGES } from './lib/qwen.mjs';
+import { createQwen, createReplyTranslator, createMemoryTranslator, createReferenceReplies, TRANSLATION_LANGUAGES } from './lib/qwen.mjs';
 import { memoryFactKey } from './lib/memory.mjs';
 import { QwenSettings } from './lib/settings.mjs';
 import { DEMO } from './lib/demo.mjs';
@@ -43,9 +43,22 @@ export function createApp(config = readConfig(), options = {}) {
   const sign = timestamp => createHmac('sha256', config.password).update(timestamp).digest('hex');
   const attempts = new Map();
   const active = new Set();
+  function referenceMetadata(revision,entries){return {reference_revision:revision,reference_sources:entries.map(({id,title,category,scope,valid_until,updated_at})=>({id,title,category,scope,valid_until,updated_at}))};}
+  function referenceState(analysis){
+    if(!analysis||analysis.demo)return analysis;
+    return {...analysis,references_stale:analysis.reference_revision?analysis.reference_revision!==store.library.revision():store.library.eligible().length>0};
+  }
+  async function referencedAnalysis(analysis,context,force=false){
+    const revision=store.library.revision();
+    const text=[analysis.summary,analysis.intent,...analysis.messages.map(message=>message.original+' '+message.chinese)].join(' ');
+    const entries=store.library.select(text,context);
+    const replies=entries.length||force?await createReferenceReplies(settings.config(),options.qwenFetcher)({analysis,context,references:entries}):analysis.replies.map(reply=>({...reply,reference_ids:[]}));
+    return {...analysis,replies,...referenceMetadata(revision,entries)};
+  }
   const memoryTranslations = new Map(), translatingCustomers = new Set();
   function memoryDetails(id, query = '', shipmentId = null) {
     const detail = store.detail(id, query, shipmentId);
+    detail.latest=referenceState(detail.latest);
     for (const section of detail.memory.sections) for (const item of section.items) {
       item.chinese = memoryTranslations.get(item.key) || item.chinese;
     }
@@ -76,7 +89,7 @@ export function createApp(config = readConfig(), options = {}) {
       if (method === 'GET' && path === '/api/status') return send(200, {
         authenticated: auth(req), password_required: !!config.password,
         qwen_configured: settings.view().configured,
-        model: settings.view().model, version: '0.2.3'
+        model: settings.view().model, version: '0.2.4'
       });
       if (method === 'POST' && path === '/api/login') {
         const ip = req.socket.remoteAddress || 'local', entry = attempts.get(ip) || { count: 0, until: 0 };
@@ -93,6 +106,14 @@ export function createApp(config = readConfig(), options = {}) {
       }
       if (method === 'POST' && path === '/api/logout') return send(200, { ok: true }, { 'Set-Cookie': 'crm_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
       if (path.startsWith('/api/') && !auth(req)) throw new HttpError(401, '请先登录。');
+      if (method === 'GET' && path === '/api/references') return send(200,{entries:store.library.list(new URL(req.url,origin).searchParams.get('q')||''),revision:store.library.revision()});
+      if (method === 'POST' && path === '/api/references') return send(201,store.library.save(await readJson(req)));
+      const referenceMatch=path.match(new RegExp(`^/api/references/(${idPattern})$`));
+      if(referenceMatch){
+        if(method==='GET')return send(200,store.library.get(referenceMatch[1]));
+        if(method==='PATCH')return send(200,store.library.save(await readJson(req),referenceMatch[1]));
+        if(method==='DELETE'){store.library.remove(referenceMatch[1]);return send(200,{ok:true});}
+      }
       if (method === 'POST' && path === '/api/replies/translate') {
         const body = await readJson(req), text = str(body.text, 6000, true), languages = body.languages;
         if (!Array.isArray(languages) || !languages.length || languages.length > 5 || new Set(languages).size !== languages.length || languages.some(language => !Object.hasOwn(TRANSLATION_LANGUAGES, language)))
@@ -122,6 +143,21 @@ export function createApp(config = readConfig(), options = {}) {
         return send(201, store.createCustomer({ name: str(b.name,120,true), phone: str(b.phone||'',80), city: str(b.city||'',100), preferred_language: str(b.preferred_language||'',80) }));
       }
       let match;
+      if ((match=path.match(new RegExp(`^/api/customers/(${idPattern})/replies/refresh$`))) && method==='POST'){
+        const body=await readJson(req),id=match[1],shipmentId=body.shipment_id?str(body.shipment_id,36,true):null;
+        store.customer(id);if(shipmentId)store.shipment(shipmentId,id);
+        const latest=store.latest(id,shipmentId);
+        if(!latest||latest.id!==body.draft_id)throw new HttpError(409,'本次聊天已更新，请刷新后再生成回复。');
+        if(latest.stale)throw new HttpError(409,'原聊天或运输资料有变更，请重新分析聊天后生成回复。');
+        if(active.size>=2)throw new HttpError(429,'已有请求正在进行，请稍后重试。');
+        const draft=store.draft(latest.id),expected=JSON.stringify(draft.analysis),key=Symbol();active.add(key);
+        try{
+          const result=await referencedAnalysis(draft.analysis,store.context(id,'',shipmentId),true);
+          if(result.reference_revision!==store.library.revision()||store.latest(id,shipmentId)?.id!==latest.id)throw new HttpError(409,'资料库或聊天有更新，请刷新后重试。');
+          store.updateReferenceReplies(latest.id,expected,result.replies,referenceMetadata(result.reference_revision,result.reference_sources));
+          return send(200,referenceState(store.latest(id,shipmentId)));
+        }finally{active.delete(key);}
+      }
       if ((match = path.match(new RegExp(`^/api/customers/(${idPattern})/memory/translate$`))) && method === 'POST') {
         const id = match[1], body = await readJson(req), detail = memoryDetails(id);
         if (body.revision !== detail.memory.revision) throw new HttpError(409, '客户记忆已更新，请刷新后重试。');
@@ -178,8 +214,10 @@ export function createApp(config = readConfig(), options = {}) {
         if (!text && !images.length) throw new HttpError(400, '请上传截图或输入聊天文字。');
         const key = Symbol(); active.add(key);
         try {
-          const analysis = await analyze({ text, images, context: store.context(customerId, text, shipmentId) });
-          return send(201, store.saveDraft({ customerId, shipmentId, analysis, images }));
+          const context=store.context(customerId,text,shipmentId);
+          const analysis = await analyze({ text, images, context });
+          const withReferences=await referencedAnalysis(analysis,context);
+          return send(201, store.saveDraft({ customerId, shipmentId, analysis:withReferences, images }));
         } finally { active.delete(key); }
       }
       if (method === 'POST' && path === '/api/demo') {

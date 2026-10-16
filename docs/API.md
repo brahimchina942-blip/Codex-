@@ -77,3 +77,17 @@
 详情 `memory` 新增revision，sections新增items；每项包括fact_id、原文original、中文chinese、字段标签label和certainty。已有中文直接显示，外文缺少译文时chinese为null；服务端会返回当前进程已缓存的有效中文。
 
 登录后 `POST /api/customers/:id/memory/translate`，输入 `{revision:"详情中的版本",fact_ids:["当前客户的有效事实ID"]}`，一次最多10项。仅翻译已保存的事实值，返回 `{revision,translations:[{fact_id,chinese}]}`，不写入客户资料。既有缓存可复用；来源变更后重新计算版本，提交旧版本或翻译途中发生变更均返回409。拒绝其他客户、已失效事实、缺少/重复ID的模型结果，沿用登录、同源和并发保护。翻译缓存不包含API Key，不作为正式事实或数据库备份的一部分。
+
+## 全局公共资料库
+
+所有接口需登录并通过同源检查，无customer_id隔离，因为内容由操作者显式维护供所有聊天共用；客户事实仍按customer_id隔离，不自动进入公共资料。
+
+- `GET /api/references?q=`：返回entries及revision，支持标题/分类/内容/条件/关键词搜索，包含停用和过期条目供管理。
+- `POST /api/references`：新建资料。
+- `GET /api/references/:id`、`PATCH /api/references/:id`、`DELETE /api/references/:id`：查看、修改、删除。
+
+字段：title（必填，160字符）、category（公司介绍/佣金/费率/服务说明/常见问题/其他资料，其中“佣金/费率”为一个完整分类值）、content（必填，12000字符）、scope（1500字符，佣金/费率必填）、keywords（600字符）、usage（reply或internal）、enabled（布尔）、valid_until（可空，合法YYYY-MM-DD）。日期有效期按北京时间当日含当天判断。仅已启用、有效且usage=reply的条目可注入生成；内部内容不会发送给模型。
+
+`POST /api/customers/:id/replies/refresh` 输入 `{draft_id:"当前最近一次归档ID",shipment_id:null}`，根据该聊天和当前有效资料重生成三种回复，仅更新原分析的replies及资料元数据，不改写消息、事实和摘要。原聊天已失效、最近批次变化或资料生成中变动时返回409。新图片/文本分析也会先识别再匹配资料生成回复。
+
+分析保存reference_revision及reference_sources（仅条目ID、标题、分类、条件、有效期、更新时间，不复制全文）。每种回复有reference_ids，模型引用未提供的ID会被拒绝。客户详情latest.references_stale动态反映资料变更或过期，独立于原消息stale，不会因此停用本次图片摘要。独立SQLite资料库随标准备份保存，不修改客户数据库结构。

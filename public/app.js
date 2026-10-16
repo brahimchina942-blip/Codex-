@@ -113,6 +113,70 @@ function quoteForm(){
 }
 $('shipment-select').onchange=()=>selectCustomer(state.selected,$('shipment-select').value||null);
 $('new-shipment').onclick=()=>shipmentForm();
+const referenceCategories=['公司介绍','佣金/费率','服务说明','常见问题','其他资料'];
+let referenceQuery='';
+async function refreshSelectedReferences(){
+  const id=state.selected,shipment=state.shipment;if(!id)return;
+  const detail=await api(`/api/customers/${id}?shipment_id=${encodeURIComponent(shipment||'')}`);
+  if(state.selected!==id||state.shipment!==shipment)return;
+  state.detail.latest=detail.latest;renderReplies(detail.latest);
+}
+async function referenceLibrary(){
+  try{
+    const {entries}=await api('/api/references');
+    showSmall('数据库参考 · 所有聊天共用',`<p>添加公司介绍、类目佣金、服务范围等资料。AI 自动回复会读取相关的已启用资料；自定义回复仍忠实翻译你的输入。</p><div class="reference-toolbar"><input id="reference-search" aria-label="搜索公共资料" placeholder="搜索标题、类目或关键词" value="${esc(referenceQuery)}"><button id="reference-add" class="button primary">＋ 新增资料</button></div><div id="reference-list"></div>`);
+    $('small-dialog').classList.add('library-dialog');
+    function list(){
+      const query=$('reference-search').value.trim().toLowerCase();referenceQuery=query;
+      const visible=entries.filter(entry=>[entry.title,entry.category,entry.content,entry.scope,entry.keywords].join(' ').toLowerCase().includes(query));
+      $('reference-list').innerHTML=visible.length?visible.map(entry=>`<article class="reference-card"><div class="reference-card-title"><strong>${esc(entry.title)}</strong><span class="small-badge">${esc(entry.category)}</span></div><p class="reference-state">${!entry.enabled?'已停用':!entry.available?'已过有效期':'已启用'} · ${entry.usage==='internal'?'内部查阅，不用于AI回复':'所有聊天的回复参考'}${entry.valid_until?' · 有效至 '+esc(entry.valid_until):''}</p>${entry.scope?`<p><b>适用条件：</b>${esc(entry.scope)}</p>`:''}<p class="reference-preview" dir="auto">${esc(entry.content.slice(0,240))}${entry.content.length>240?'…':''}</p><div class="reference-card-actions"><button class="button quiet" data-reference-view="${entry.id}">查看</button><button class="button quiet" data-reference-edit="${entry.id}">编辑</button><button class="button danger" data-reference-delete="${entry.id}">删除</button></div></article>`).join(''):'<p class="memory-empty">没有匹配的资料。点击“新增资料”开始建立公共资料库。</p>';
+      document.querySelectorAll('[data-reference-view]').forEach(button=>button.onclick=()=>referenceView(button.dataset.referenceView));
+      document.querySelectorAll('[data-reference-edit]').forEach(button=>button.onclick=()=>referenceForm(entries.find(entry=>entry.id===button.dataset.referenceEdit)));
+      document.querySelectorAll('[data-reference-delete]').forEach(button=>button.onclick=()=>referenceDelete(entries.find(entry=>entry.id===button.dataset.referenceDelete)));
+    }
+    $('reference-search').oninput=list;$('reference-add').onclick=()=>referenceForm();list();
+  }catch(error){toast(error.message,true);}
+}
+function referenceForm(entry=null){
+  showSmall(entry?'编辑公共资料':'新增公共资料',`<form id="reference-form"><label>资料标题<input name="title" maxlength="160" value="${esc(entry?.title||'')}" placeholder="例如：公司服务介绍、家具类佣金规则" required></label><label>资料分类<select name="category" id="reference-category">${referenceCategories.map(category=>`<option ${category===(entry?.category||'公司介绍')?'selected':''}>${esc(category)}</option>`).join('')}</select></label><label>资料内容<textarea name="content" rows="7" maxlength="12000" placeholder="填写你们核对过的介绍、费率和业务说明；AI 会保留所写条件。" required>${esc(entry?.content||'')}</textarea></label><label>适用类目与条件（佣金/费率必填）<textarea name="scope" id="reference-scope" rows="2" maxlength="1500" placeholder="适用货物、计算基数、币种、包含及不包含的费用等">${esc(entry?.scope||'')}</textarea></label><label>匹配关键词（可留空）<input name="keywords" maxlength="600" value="${esc(entry?.keywords||'')}" placeholder="可填中文、英文或法语关键词，用逗号分隔"></label><div class="review-grid"><label>有效期（可留空）<input name="valid_until" type="date" value="${esc(entry?.valid_until||'')}"></label><label>资料用途<select name="usage"><option value="reply" ${entry?.usage!=='internal'?'selected':''}>用于客户回复参考</option><option value="internal" ${entry?.usage==='internal'?'selected':''}>内部查阅，不发送给AI</option></select></label></div><label class="reference-check"><input type="checkbox" name="enabled" ${entry?.enabled===false?'':'checked'}>启用这条资料</label><p id="reference-form-error" class="error-text" role="status"></p><div class="buttons"><button type="button" id="reference-back" class="button quiet">返回资料库</button><button id="reference-save" class="button primary">保存资料</button></div></form>`);
+  $('small-dialog').classList.add('library-dialog');
+  $('reference-back').onclick=referenceLibrary;
+  $('reference-category').onchange=()=>{$('reference-scope').required=$('reference-category').value==='佣金/费率';};$('reference-category').onchange();
+  $('reference-form').onsubmit=async event=>{
+    event.preventDefault();const value=Object.fromEntries(new FormData(event.target));value.enabled=event.target.elements.enabled.checked;
+    $('reference-save').disabled=true;
+    try{if(entry)await api(`/api/references/${entry.id}`,{method:'PATCH',body:JSON.stringify(value)});else await post('/api/references',value);await refreshSelectedReferences();await referenceLibrary();toast('资料已保存，所有聊天均可参考');}
+    catch(error){if($('reference-form-error'))$('reference-form-error').textContent=error.message;}
+    finally{if($('reference-save'))$('reference-save').disabled=false;}
+  };
+}
+async function referenceView(id){
+  try{
+    const entry=await api(`/api/references/${id}`);
+    showSmall(entry.title,`<p>${esc(entry.category)} · ${entry.available?'已启用且在有效期内':'已停用或过期'} · ${entry.usage==='reply'?'用于回复参考':'仅内部查阅'}</p>${entry.scope?`<p><b>适用条件：</b>${esc(entry.scope)}</p>`:''}${entry.valid_until?`<p>有效至 ${esc(entry.valid_until)}</p>`:''}<div class="source-quote" dir="auto">${esc(entry.content)}</div><div class="buttons"><button id="reference-back" class="button quiet">返回资料库</button><button id="reference-edit-current" class="button primary">编辑资料</button></div>`);
+    $('small-dialog').classList.add('library-dialog');$('reference-back').onclick=referenceLibrary;$('reference-edit-current').onclick=()=>referenceForm(entry);
+  }catch(error){toast(error.message,true);}
+}
+function referenceDelete(entry){
+  showSmall('删除公共资料',`<p>删除“${esc(entry.title)}”后，所有聊天的后续回复都不再参考它。受资料变更影响的旧回复需重新生成。</p><div class="buttons"><button id="reference-back" class="button quiet">保留资料</button><button id="reference-confirm-delete" class="button danger">删除资料</button></div>`);
+  $('reference-back').onclick=referenceLibrary;$('reference-confirm-delete').onclick=async()=>{try{await api(`/api/references/${entry.id}`,{method:'DELETE'});await refreshSelectedReferences();await referenceLibrary();toast('资料已删除');}catch(error){toast(error.message,true);}};
+}
+const referenceRefreshes=new Set();
+function bindReferenceRefresh(){
+  const button=$('refresh-reference-replies');if(!button)return;
+  const id=state.selected,shipment=state.shipment,scope=replyScope(),draftId=state.detail?.latest?.id;
+  button.disabled=referenceRefreshes.has(scope);button.textContent=button.disabled?'正在更新…':'按资料库更新回复';
+  button.onclick=async()=>{
+    if(!state.status.qwen_configured){settings();return;}
+    referenceRefreshes.add(scope);button.disabled=true;button.textContent='正在更新…';
+    try{
+      const latest=await post(`/api/customers/${id}/replies/refresh`,{shipment_id:shipment,draft_id:draftId});
+      if(state.selected===id&&state.shipment===shipment&&state.detail?.latest?.id===draftId){state.detail.latest=latest;renderReplies(latest);toast('已按当前资料库更新回复');}
+    }catch(error){toast(error.message,true);}
+    finally{referenceRefreshes.delete(scope);if(state.selected===id&&state.shipment===shipment)renderReplies(state.detail?.latest);}
+  };
+}
+
 const replyLanguages=[['en','英语'],['fr','法语'],['ar','阿拉伯语'],['darija','摩洛哥达里贾'],['es','西班牙语']];
 const customReplies=new Map();
 let repliesCollapsed=false;
@@ -123,7 +187,8 @@ function renderReplies(latest){
   $('replies').hidden=false;
   const reply=replies.find(r=>r.style===state.replyStyle)||replies[0];
   const tabs=`${replies.map(r=>`<button data-reply="${r.style}" class="${!custom&&reply.style===r.style?'active':''}">${styles[r.style]}</button>`).join('')}<button data-reply="custom" class="${custom?'active':''}">自定义回复</button>`;
-  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest?.demo?'· 固定演示':''}</h3><div class="reply-tabs">${tabs}<button type="button" id="toggle-replies" class="reply-collapse" aria-controls="reply-content"></button></div></div><div id="reply-content"></div>`;
+  $('replies').innerHTML=`<div class="reply-head"><div class="reply-heading"><h3>AI 回复参考 ${latest?.demo?'· 固定演示':''}</h3><button type="button" id="reference-library-btn" class="button quiet reference-library-button">数据库参考</button></div><div class="reply-tabs">${tabs}<button type="button" id="toggle-replies" class="reply-collapse" aria-controls="reply-content"></button></div></div><div id="reply-content"></div>`;
+  $('reference-library-btn').onclick=referenceLibrary;
   function applyCollapse(){
     $('reply-content').hidden=repliesCollapsed;$('replies').classList.toggle('is-collapsed',repliesCollapsed);
     const button=$('toggle-replies'),label=repliesCollapsed?'展开 AI 回复参考':'收起 AI 回复参考';
@@ -133,8 +198,12 @@ function renderReplies(latest){
   document.querySelectorAll('[data-reply]').forEach(b=>b.onclick=()=>{state.replyStyle=b.dataset.reply;repliesCollapsed=false;renderReplies(latest);});
   if(!custom){
     if(latest.stale){$('reply-content').innerHTML='<div class="warning-box">消息、报价或运输需求有变更，旧回复已停用。请重新分析，或使用自定义回复翻译你要表达的内容。</div>';return;}
-    $('reply-content').innerHTML=`<p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><button id="copy-reply" class="button">复制回复</button></div>`;
-    $('copy-reply').onclick=()=>copy(reply.text);return;
+    if(latest.references_stale){$('reply-content').innerHTML='<div class="warning-box">公共资料库已更新或资料有效期有变化，旧自动回复已停用，请按当前资料重新生成。</div><button type="button" id="refresh-reference-replies" class="button quiet">按资料库更新回复</button>';bindReferenceRefresh();return;}
+    $('reply-content').innerHTML=`<p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><div class="reply-copy-buttons"><button type="button" id="refresh-reference-replies" class="button quiet">按资料库更新回复</button><button id="copy-reply" class="button">复制回复</button></div></div><div id="reply-reference-sources" class="reply-reference-sources"></div>`;
+    $('copy-reply').onclick=()=>copy(reply.text);bindReferenceRefresh();
+    const sources=(latest.reference_sources||[]).filter(source=>(reply.reference_ids||[]).includes(source.id));
+    $('reply-reference-sources').innerHTML=sources.length?'参考资料：'+sources.map(source=>`<button type="button" class="text-button" data-reply-reference="${source.id}">${esc(source.title)}</button>`).join(' · '):'';
+    document.querySelectorAll('[data-reply-reference]').forEach(button=>button.onclick=()=>referenceView(button.dataset.replyReference));return;
   }
   const entry=customReplyState(),scope=replyScope();
   $('reply-content').innerHTML=`<form id="custom-reply-form"><label for="custom-reply-text" class="custom-reply-label">输入你想回复的中文</label><textarea id="custom-reply-text" rows="2" maxlength="6000" placeholder="例如：请确认包装后的总体积和重量，我再为你核算运费。" required>${esc(entry.text)}</textarea><fieldset class="translation-languages"><legend>翻译成（可多选）</legend>${replyLanguages.map(([code,name])=>`<label><input type="checkbox" name="language" value="${code}" ${entry.languages.includes(code)?'checked':''}>${name}</label>`).join('')}</fieldset><div class="custom-reply-actions"><span>忠实翻译你的原话 · 不会自动发送</span><button id="translate-custom-reply" class="button primary" ${entry.busy?'disabled':''}>${entry.busy?'正在翻译…':'翻译回复'}</button></div><p id="custom-reply-error" class="error-text" role="status">${esc(entry.error)}</p><div id="custom-reply-results"></div></form>`;
@@ -161,7 +230,7 @@ function renderReplies(latest){
   };
 }
 async function copy(text){try{await navigator.clipboard.writeText(text);toast('已复制');}catch{showSmall('请手动复制',`<textarea id="copy-fallback" rows="8" readonly>${esc(text)}</textarea>`);$('copy-fallback').select();}}
-function showSmall(title,html){$('small-title').textContent=title;$('small-body').innerHTML=html;if(!$('small-dialog').open)$('small-dialog').showModal();}
+function showSmall(title,html){$('small-dialog').classList.remove('library-dialog');$('small-title').textContent=title;$('small-body').innerHTML=html;if(!$('small-dialog').open)$('small-dialog').showModal();}
 $('small-close').onclick=()=>$('small-dialog').close();
 function customerForm(edit=false){
   const c=edit?state.detail.customer:{};
