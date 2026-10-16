@@ -29,6 +29,7 @@ function renderCustomers(){
 async function selectCustomer(id,shipment=null){
   state.selected=id;state.shipment=shipment;const version=++selectionVersion;renderCustomers();setPanel('chat');
   $('chat-area').innerHTML='<div class="loading-block">读取客户记忆…</div>';
+  $('replies').hidden=true;$('profile-content').innerHTML='<div class="loading-block">读取客户记忆…</div>';
   try{const detail=await api(`/api/customers/${id}?shipment_id=${encodeURIComponent(shipment||'')}`);if(version!==selectionVersion)return;state.detail=detail;renderDetail();}
   catch(e){toast(e.message,true);}
 }
@@ -53,20 +54,21 @@ function renderMessages(messages){
   $('chat-area').scrollTop=$('chat-area').scrollHeight;
 }
 function renderProfile(customer,facts,latest){
-  facts=facts.filter(f=>(f.shipment_id||null)===state.shipment || (!f.shipment_id && ['contact','language'].includes(f.field)));
-  const active=facts.filter(f=>f.state==='active');const old=facts.filter(f=>f.state!=='active');
-  const factHtml=f=>`<div class="fact ${f.certainty==='inferred'?'inferred':''} ${f.state}"><div class="fact-label"><span>${esc(labels[f.field])}</span><span>${f.state==='superseded'?'已被更新':f.state==='needs_review'?'原消息变更 · 待复核':f.certainty==='inferred'?'AI推测':'客户明确陈述'}</span></div><div class="fact-value">${esc(f.value)}</div><button class="fact-source" data-source="${f.id}">查看消息来源 ↗</button></div>`;
-  $('profile-content').innerHTML=`<div class="profile-details"><p><span>联系信息</span><strong>${esc(customer.phone||'未记录')}</strong></p><p><span>归档消息</span><strong>${state.detail.messages.length} 条</strong></p><p><span>客户状态</span><strong>${esc(customer.status)}</strong></p></div>${latest?`<div class="profile-summary"><h3>${latest.demo?'演示':'本次'}沟通摘要</h3><p>${esc(latest.summary)}</p>${latest.stale?'<p class="warning-tag">消息、报价或运输需求已变更，请重新分析后参考摘要和回复。</p>':''}</div>`:''}<div class="section-label"><span>当前记忆</span><span>${active.length} 项</span></div>${active.length?active.map(factHtml).join(''):'<p class="empty-list">尚未确认客户事实</p>'}${old.length?`<details><summary class="section-label">历史与待复核 · ${old.length} 项</summary>${old.map(factHtml).join('')}</details>`:''}<div class="section-label">数据留档</div><button id="export-customer" class="button quiet full">导出客户文字档案 ↓</button>`;
-  document.querySelectorAll('[data-source]').forEach(b=>b.onclick=()=>{const f=facts.find(f=>f.id===b.dataset.source);showSmall('记忆来源',`<p>${esc(labels[f.field])}：${esc(f.value)}</p><div class="source-quote" dir="auto">${esc(f.evidence)}</div><p class="translation">${esc(f.evidence_chinese)}</p><p>${esc(f.evidence_time||'原截图无可见时间')}</p>`);});
+  const detail=state.detail,allFacts=detail.facts,active=allFacts.filter(f=>f.state==='active'),old=allFacts.filter(f=>f.state!=='active');
+  const memory=detail.memory;
+  const factHtml=f=>`<div class="fact ${f.certainty==='inferred'?'inferred':''} ${f.state}"><div class="fact-label"><span>${esc(labels[f.field])}${f.shipment_id?' · '+esc(detail.shipments.find(s=>s.id===f.shipment_id)?.title||'运输需求'):''}</span><span>${f.state==='superseded'?'已被更新':f.state==='needs_review'?'原消息变更 · 待复核':f.certainty==='inferred'?'AI推测':'客户明确陈述'}</span></div><div class="fact-value">${esc(f.value)}</div><button class="fact-source" data-source="${f.id}">查看消息来源 ↗</button></div>`;
+  const pending=state.draft?.customer_id===customer.id&&(state.draft.shipment_id||null)===state.shipment?state.draft:null;
+  const batch=pending?{...pending.analysis,screenshots:pending.screenshots,demo:pending.demo,created_at:pending.created_at}:latest;
+  const imageCount=batch?.screenshots?.length||0;
+  $('profile-content').innerHTML=`<section class="memory-overview" aria-label="全部记录的记忆总结"><div class="memory-section-head"><h3>全部记录的记忆总结</h3><span class="small-badge">自动汇总</span></div><p class="memory-meta">${esc(memory?.introduction||'尚无已归档记忆')}</p>${memory?.sections.length?memory.sections.map(section=>`<div class="memory-overview-group"><h4>${esc(section.title)}${section.status?`<span>${esc(section.status)}</span>`:''}</h4><p>${esc(section.text)}</p></div>`).join(''):'<p class="memory-empty">确认并归档聊天后，这里会汇总该客户的全部有效记忆。</p>'}${memory?.needs_review_count?`<p class="warning-tag memory-meta">${memory.needs_review_count} 项记忆的来源有变更，已从当前总结排除，等待复核。</p>`:''}<details class="memory-sources"><summary>查看记忆来源 · ${active.length} 项</summary>${active.map(factHtml).join('')||'<p class="memory-empty">暂无有效记忆</p>'}</details></section><section class="latest-summary" aria-label="本次聊天图片总结"><div class="memory-section-head"><h3>本次聊天图片总结</h3></div>${batch?`<p class="memory-meta">${pending?'待确认 · 尚未写入客户记忆':'最近一次已归档'} · ${imageCount?imageCount+' 张图片':'文本聊天'}${batch.demo?' · 固定演示':''}</p>${batch.stale?'<p class="warning-tag">消息、报价或运输需求有变更，本次旧总结已停用，请重新分析。</p>':`<p class="batch-summary-text">${esc(batch.summary||'本次没有可用的沟通总结。')}</p>`}`:'<p class="memory-empty">分析当前客户的聊天截图后，这里显示本次总结；上方保留全部已归档记忆。</p>'}</section><details class="memory-tools"><summary>客户资料、运输需求与历史记忆</summary><div class="profile-details"><p><span>联系信息</span><strong>${esc(customer.phone||'未记录')}</strong></p><p><span>归档消息</span><strong>${memory?.message_count||0} 条</strong></p><p><span>客户状态</span><strong>${esc(customer.status)}</strong></p></div><div id="shipment-profile"></div>${old.length?`<details><summary class="section-label">历史与待复核 · ${old.length} 项</summary>${old.map(factHtml).join('')}</details>`:''}<div class="section-label">数据留档</div><button id="export-customer" class="button quiet full">导出客户文字档案 ↓</button></details>`;
+  document.querySelectorAll('[data-source]').forEach(b=>b.onclick=()=>{const f=allFacts.find(f=>f.id===b.dataset.source);showSmall('记忆来源',`<p>${esc(labels[f.field])}：${esc(f.value)}</p><div class="source-quote" dir="auto">${esc(f.evidence)}</div><p class="translation">${esc(f.evidence_chinese)}</p><p>${esc(f.evidence_time||'原截图无可见时间')}</p>`);});
   $('export-customer').onclick=()=>{const a=document.createElement('a');a.href=`/api/customers/${customer.id}/export`;a.download='customer-export.json';a.click();};
-  const shipment=state.detail.shipments.find(s=>s.id===state.shipment);
-  const quotes=state.detail.quotes.filter(q=>q.shipment_id===state.shipment);
-  const business=document.createElement('section');business.className='shipment-profile';
-  business.innerHTML=shipment?`<div class="section-label"><span>这票运输需求</span><button id="edit-shipment" class="text-button">编辑</button></div><h3>${esc(shipment.title)}</h3><p>${esc(shipment.status)}</p>${shipment.notes?`<p>${esc(shipment.notes)}</p>`:''}<div class="section-label"><span>报价记录 · ${quotes.length}</span><button id="new-quote" class="text-button">＋ 记录报价</button></div><p class="identity-hint">手动录入实际报价；新记录保留旧金额。</p>${quotes.map(q=>`<div class="quote-card"><strong>${esc(q.amount)} ${esc(q.currency)}</strong><span class="small-badge">${esc(q.status)}</span><p>${esc(q.scope)}</p><p>有效期：${esc(q.valid_until||'未注明')}</p>${q.notes?`<p>${esc(q.notes)}</p>`:''}<small>${q.state==='needs_review'?'来源已校对或删除 · 待复核':q.evidence_message_id?'有消息来源':'人工录入 · 未关联消息'}</small>${q.evidence_message_id?`<button class="fact-source" data-quote-source="${q.id}">查看来源 ↗</button>`:''}</div>`).join('')}`:`<div class="section-label">运输需求 · ${state.detail.shipments.length} 票</div><p class="identity-hint">旧记录保留在未分类。请选择或新建运输需求，再分析这票货物，防止不同订单的货量互相覆盖。</p><button id="profile-new-shipment" class="button quiet full">＋ 新建运输需求</button>`;
-  $('profile-content').prepend(business);
+  const shipment=detail.shipments.find(s=>s.id===state.shipment),quotes=detail.quotes.filter(q=>q.shipment_id===state.shipment);
+  const business=$('shipment-profile');business.className='shipment-profile';
+  business.innerHTML=shipment?`<div class="section-label"><span>这票运输需求</span><button id="edit-shipment" class="text-button">编辑</button></div><h3>${esc(shipment.title)}</h3><p>${esc(shipment.status)}</p>${shipment.notes?`<p>${esc(shipment.notes)}</p>`:''}<div class="section-label"><span>报价记录 · ${quotes.length}</span><button id="new-quote" class="text-button">＋ 记录报价</button></div><p class="identity-hint">手动录入实际报价；新记录保留旧金额。</p>${quotes.map(q=>`<div class="quote-card"><strong>${esc(q.amount)} ${esc(q.currency)}</strong><span class="small-badge">${esc(q.status)}</span><p>${esc(q.scope)}</p><p>有效期：${esc(q.valid_until||'未注明')}</p>${q.notes?`<p>${esc(q.notes)}</p>`:''}<small>${q.state==='needs_review'?'来源已校对或删除 · 待复核':q.evidence_message_id?'有消息来源':'人工录入 · 未关联消息'}</small>${q.evidence_message_id?`<button class="fact-source" data-quote-source="${q.id}">查看来源 ↗</button>`:''}</div>`).join('')}`:`<div class="section-label">运输需求 · ${detail.shipments.length} 票</div><p class="identity-hint">每票货物分别归档，避免新旧货量混淆。</p><button id="profile-new-shipment" class="button quiet full">＋ 新建运输需求</button>`;
   if(shipment){$('edit-shipment').onclick=()=>shipmentForm(shipment);$('new-quote').onclick=quoteForm;}
   else $('profile-new-shipment').onclick=()=>shipmentForm();
-  document.querySelectorAll('[data-quote-source]').forEach(b=>b.onclick=()=>{const q=quotes.find(q=>q.id===b.dataset.quoteSource),m=state.detail.messages.find(m=>m.id===q.evidence_message_id);showSmall('报价来源',m?`<div class="source-quote" dir="auto">${esc(m.original)}</div><p>${esc(m.chinese)}</p>`:'来源消息已删除，请复核报价。');});
+  document.querySelectorAll('[data-quote-source]').forEach(b=>b.onclick=()=>{const q=quotes.find(q=>q.id===b.dataset.quoteSource),m=detail.messages.find(m=>m.id===q.evidence_message_id);showSmall('报价来源',m?`<div class="source-quote" dir="auto">${esc(m.original)}</div><p>${esc(m.chinese)}</p>`:'来源消息已删除，请复核报价。');});
 }
 function shipmentForm(shipment=null){
   const customerId=state.selected;if(!customerId)return toast('请先选择客户',true);
@@ -81,14 +83,45 @@ function quoteForm(){
 }
 $('shipment-select').onchange=()=>selectCustomer(state.selected,$('shipment-select').value||null);
 $('new-shipment').onclick=()=>shipmentForm();
+const replyLanguages=[['en','英语'],['fr','法语'],['ar','阿拉伯语'],['darija','摩洛哥达里贾'],['es','西班牙语']];
+const customReplies=new Map();
+const replyScope=()=>`${state.selected||'new'}:${state.shipment||'general'}`;
+function customReplyState(){const key=replyScope();if(!customReplies.has(key))customReplies.set(key,{text:'',languages:['en'],translations:[],busy:false,error:''});return customReplies.get(key);}
 function renderReplies(latest){
-  const replies=latest?.replies||[];$('replies').hidden=!replies.length;
-  if(!replies.length)return;
-  if(latest.stale){$('replies').innerHTML='<div class="warning-box">消息、报价或运输需求有变更，旧回复已停用。请结合当前记录输入补充说明并重新分析。</div>';return;}
+  const replies=latest?.replies||[],custom=state.replyStyle==='custom'||!replies.length;
+  $('replies').hidden=false;
   const reply=replies.find(r=>r.style===state.replyStyle)||replies[0];
-  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest.demo?'· 固定演示':''}</h3><div class="reply-tabs">${replies.map(r=>`<button data-reply="${r.style}" class="${reply.style===r.style?'active':''}">${styles[r.style]}</button>`).join('')}</div></div><p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><button id="copy-reply" class="button">复制回复</button></div>`;
+  const tabs=`${replies.map(r=>`<button data-reply="${r.style}" class="${!custom&&reply.style===r.style?'active':''}">${styles[r.style]}</button>`).join('')}<button data-reply="custom" class="${custom?'active':''}">自定义回复</button>`;
+  $('replies').innerHTML=`<div class="reply-head"><h3>AI 回复参考 ${latest?.demo?'· 固定演示':''}</h3><div class="reply-tabs">${tabs}</div></div><div id="reply-content"></div>`;
   document.querySelectorAll('[data-reply]').forEach(b=>b.onclick=()=>{state.replyStyle=b.dataset.reply;renderReplies(latest);});
-  $('copy-reply').onclick=()=>copy(reply.text);
+  if(!custom){
+    if(latest.stale){$('reply-content').innerHTML='<div class="warning-box">消息、报价或运输需求有变更，旧回复已停用。请重新分析，或使用自定义回复翻译你要表达的内容。</div>';return;}
+    $('reply-content').innerHTML=`<p class="reply-text" dir="auto">${esc(reply.text)}</p><p class="reply-zh">${esc(reply.chinese)}</p><div class="reply-copy"><span>需你确认 · 复制不会自动发送</span><button id="copy-reply" class="button">复制回复</button></div>`;
+    $('copy-reply').onclick=()=>copy(reply.text);return;
+  }
+  const entry=customReplyState(),scope=replyScope();
+  $('reply-content').innerHTML=`<form id="custom-reply-form"><label for="custom-reply-text" class="custom-reply-label">输入你想回复的中文</label><textarea id="custom-reply-text" rows="2" maxlength="6000" placeholder="例如：请确认包装后的总体积和重量，我再为你核算运费。" required>${esc(entry.text)}</textarea><fieldset class="translation-languages"><legend>翻译成（可多选）</legend>${replyLanguages.map(([code,name])=>`<label><input type="checkbox" name="language" value="${code}" ${entry.languages.includes(code)?'checked':''}>${name}</label>`).join('')}</fieldset><div class="custom-reply-actions"><span>忠实翻译你的原话 · 不会自动发送</span><button id="translate-custom-reply" class="button primary" ${entry.busy?'disabled':''}>${entry.busy?'正在翻译…':'翻译回复'}</button></div><p id="custom-reply-error" class="error-text" role="status">${esc(entry.error)}</p><div id="custom-reply-results"></div></form>`;
+  function renderResults(){
+    $('custom-reply-results').innerHTML=entry.translations.map(item=>`<article class="custom-translation"><div><strong>${esc(item.label)}</strong><button type="button" data-copy-translation="${item.language}" class="button quiet">复制</button></div><p class="reply-text" dir="auto">${esc(item.text)}</p></article>`).join('');
+    document.querySelectorAll('[data-copy-translation]').forEach(button=>button.onclick=()=>copy(entry.translations.find(item=>item.language===button.dataset.copyTranslation).text));
+  }
+  renderResults();
+  function invalidate(){entry.translations=[];entry.error='';$('custom-reply-results').innerHTML='';$('custom-reply-error').textContent='';}
+  $('custom-reply-text').oninput=()=>{entry.text=$('custom-reply-text').value;invalidate();};
+  document.querySelectorAll('input[name="language"]').forEach(input=>input.onchange=()=>{entry.languages=[...document.querySelectorAll('input[name="language"]:checked')].map(input=>input.value);invalidate();});
+  $('custom-reply-form').onsubmit=async event=>{
+    event.preventDefault();if(entry.busy)return;
+    if(!entry.languages.length){entry.error='请至少勾选一种目标语言。';$('custom-reply-error').textContent=entry.error;return;}
+    if(!state.status.qwen_configured){settings();return;}
+    const input={text:entry.text.trim(),languages:[...entry.languages]},signature=JSON.stringify(input);
+    entry.busy=true;entry.error='';entry.translations=[];renderReplies(latest);
+    try{
+      const result=await post('/api/replies/translate',input);
+      if(JSON.stringify({text:entry.text.trim(),languages:entry.languages})===signature)entry.translations=result.translations;
+      else entry.error='内容或目标语言已改变，请重新翻译。';
+    }catch(error){entry.error=error.message;}
+    finally{entry.busy=false;if(replyScope()===scope&&(state.replyStyle==='custom'||!(state.detail?.latest?.replies?.length)))renderReplies(state.detail?.latest);}
+  };
 }
 async function copy(text){try{await navigator.clipboard.writeText(text);toast('已复制');}catch{showSmall('请手动复制',`<textarea id="copy-fallback" rows="8" readonly>${esc(text)}</textarea>`);$('copy-fallback').select();}}
 function showSmall(title,html){$('small-title').textContent=title;$('small-body').innerHTML=html;if(!$('small-dialog').open)$('small-dialog').showModal();}
@@ -142,6 +175,7 @@ async function demo(){try{const d=await post('/api/demo',{});openReview(d);await
 $('demo-btn').onclick=demo;
 function openReview(draft){
   state.draft=draft;
+  if(state.detail&&draft.customer_id===state.selected)renderProfile(state.detail.customer,state.detail.facts,state.detail.latest);
   const a=draft.analysis;
   const options=draft.demo?`<option value="new">新建演示客户</option>`:draft.customer_id?`<option value="${draft.customer_id}">${esc(state.customers.find(c=>c.id===draft.customer_id)?.name||'当前客户')}</option>`:`<option value="">请确认这是谁的聊天</option><option value="new">新建客户档案</option>${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} ${esc(c.phone)}</option>`).join('')}`;
   $('review-body').innerHTML=`${a.warnings.length?`<div class="warning-box">${a.warnings.map(esc).join('<br>')}</div>`:''}<section class="review-step"><h3>01 · 确认客户</h3><p class="identity-hint">${a.identity.name||a.identity.phone?`图片身份线索：${esc(a.identity.name)} ${esc(a.identity.phone)}。仅供参考，请自行核对。`:'没有足够的客户身份线索，请确认归属。'}${draft.customer_id?' 本次分析已使用所选客户记忆，如归属错误请关闭并重新分析。':''}</p><select id="review-target" required>${options}</select><div id="new-target-fields" ${draft.demo?'':'hidden'}><label>新客户姓名<input id="review-new-name" maxlength="120" value="${esc(a.identity.name||'')}" placeholder="请输入可辨识的客户姓名"></label><label>电话 / 联系标识<input id="review-new-phone" maxlength="80" value="${esc(a.identity.phone||'')}"></label></div></section><section class="review-step"><h3>02 · 校对原文与中文</h3>${a.messages.map((m,i)=>`<div class="review-message" data-review-index="${i}"><div class="review-message-head"><b>消息 ${i+1}</b><select data-m-speaker="${i}" aria-label="消息${i+1}发送方"><option value="customer" ${m.speaker==='customer'?'selected':''}>客户</option><option value="self" ${m.speaker==='self'?'selected':''}>我</option><option value="unknown" ${m.speaker==='unknown'?'selected':''}>需确认</option></select><input data-m-time="${i}" value="${esc(m.visible_time)}" placeholder="截图可见时间" aria-label="消息${i+1}时间"><label><input type="checkbox" data-m-uncertain="${i}" ${m.uncertain?'checked':''}>识别待留意</label></div><div class="review-grid"><label><span>原文 · ${esc(m.language)}</span><textarea data-m-original="${i}" dir="auto" maxlength="6000" required>${esc(m.original)}</textarea></label><label><span>中文理解</span><textarea data-m-chinese="${i}" maxlength="6000" required>${esc(m.chinese)}</textarea></label></div></div>`).join('')}</section><section class="review-step"><h3>03 · 选择写入的客户记忆</h3><p class="identity-hint">客户明确信息默认勾选；AI 推测默认不选。可修改内容，同字段变化保留历史。不同批次货物需谨慎核对。</p>${a.facts.length?a.facts.map((f,i)=>`<label class="fact-review"><input type="checkbox" data-f-check="${i}" ${f.certainty==='stated'?'checked':''}><div><p>${esc(labels[f.field])} · ${f.certainty==='stated'?'客户明确陈述':'AI推测'} · 来源消息${f.message_index+1}</p><input type="text" data-f-value="${i}" maxlength="1500" value="${esc(f.value)}"></div></label>`).join(''):'<p class="identity-hint">本次没有提取到新增事实。</p>'}</section>`;
@@ -181,7 +215,7 @@ $('review-form').onsubmit=async e=>{
   try{const result=await post(`/api/drafts/${d.id}/commit`,b);$('review-dialog').close();state.draft=null;state.files.forEach(x=>URL.revokeObjectURL(x.url));state.files=[];renderFiles();$('message-input').value='';await refreshCustomers();await selectCustomer(result.customer_id,result.shipment_id||null);await refreshDrafts();toast(`已归档 ${result.inserted} 条新消息${result.skipped?`，跳过 ${result.skipped} 条重叠消息`:''}`);}
   catch(e){toast(e.message,true);}finally{$('commit-btn').disabled=false;}
 };
-async function refreshDrafts(){const drafts=await api('/api/drafts');$('draft-count').textContent=drafts.length;return drafts;}
+async function refreshDrafts(){const drafts=await api('/api/drafts');$('draft-count').textContent=drafts.length;if(state.draft&&!drafts.some(d=>d.id===state.draft.id)){state.draft=null;if(state.detail)renderProfile(state.detail.customer,state.detail.facts,state.detail.latest);}return drafts;}
 $('recover-btn').onclick=async()=>{try{const drafts=await refreshDrafts();showSmall('待审核草稿',drafts.length?drafts.map(d=>`<div class="draft-item"><p>${d.demo?'固定演示':esc(state.customers.find(c=>c.id===d.customer_id)?.name||'未确认客户')}<br>${new Date(d.created_at).toLocaleString('zh-CN')}</p><div><button class="button" data-open-draft="${d.id}">审核</button> <button class="button danger" data-remove-draft="${d.id}">删除</button></div></div>`).join(''):'<p>没有待审核的草稿。</p>');document.querySelectorAll('[data-open-draft]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/drafts/${b.dataset.openDraft}`);$('small-dialog').close();openReview(d);}catch(e){toast(e.message,true);}});document.querySelectorAll('[data-remove-draft]').forEach(b=>b.onclick=async()=>{try{await api(`/api/drafts/${b.dataset.removeDraft}`,{method:'DELETE'});b.closest('.draft-item').remove();await refreshDrafts();toast('草稿及对应截图已删除');}catch(e){toast(e.message,true);}});}catch(e){toast(e.message,true);}};
 const qwenRegions = [
   ['北京', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
@@ -231,7 +265,7 @@ $('login-form').onsubmit=async e=>{e.preventDefault();try{await post('/api/login
 $('login-dialog').addEventListener('cancel',e=>e.preventDefault());
 $('logout-btn').onclick=async()=>{try{await post('/api/logout',{});location.reload();}catch(e){toast(e.message,true);}};
 async function init(){
-  try{state.status=await api('/api/status');renderModelStatus();$('logout-btn').hidden=!state.status.password_required;if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}await refreshCustomers();await refreshDrafts();if(location.hash==='#settings')await settings();}
+  try{state.status=await api('/api/status');renderModelStatus();$('logout-btn').hidden=!state.status.password_required;if(!state.status.authenticated){if(!$('login-dialog').open)$('login-dialog').showModal();return;}await refreshCustomers();await refreshDrafts();renderReplies(state.detail?.latest);if(location.hash==='#settings')await settings();}
   catch(e){toast(e.message,true);}
 }
 await init();

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { Store } from './lib/store.mjs';
 import { HttpError, object, str, decodeImages, validateMessages } from './lib/core.mjs';
-import { createQwen } from './lib/qwen.mjs';
+import { createQwen, createReplyTranslator, TRANSLATION_LANGUAGES } from './lib/qwen.mjs';
 import { QwenSettings } from './lib/settings.mjs';
 import { DEMO } from './lib/demo.mjs';
 
@@ -67,7 +67,7 @@ export function createApp(config = readConfig(), options = {}) {
       if (method === 'GET' && path === '/api/status') return send(200, {
         authenticated: auth(req), password_required: !!config.password,
         qwen_configured: settings.view().configured,
-        model: settings.view().model, version: '0.2.1'
+        model: settings.view().model, version: '0.2.2'
       });
       if (method === 'POST' && path === '/api/login') {
         const ip = req.socket.remoteAddress || 'local', entry = attempts.get(ip) || { count: 0, until: 0 };
@@ -84,6 +84,15 @@ export function createApp(config = readConfig(), options = {}) {
       }
       if (method === 'POST' && path === '/api/logout') return send(200, { ok: true }, { 'Set-Cookie': 'crm_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
       if (path.startsWith('/api/') && !auth(req)) throw new HttpError(401, '请先登录。');
+      if (method === 'POST' && path === '/api/replies/translate') {
+        const body = await readJson(req), text = str(body.text, 6000, true), languages = body.languages;
+        if (!Array.isArray(languages) || !languages.length || languages.length > 5 || new Set(languages).size !== languages.length || languages.some(language => !Object.hasOwn(TRANSLATION_LANGUAGES, language)))
+          throw new HttpError(400, '请勾选至少一种支持的翻译语言。');
+        if (active.size >= 2) throw new HttpError(429, '已有请求正在进行，请稍后重试。');
+        const key = Symbol(); active.add(key);
+        try { return send(200, { translations: await createReplyTranslator(settings.config(), options.qwenFetcher)({ text, languages }) }); }
+        finally { active.delete(key); }
+      }
       if (method === 'GET' && path === '/api/settings/qwen') return send(200, settings.view());
       if (method === 'POST' && path === '/api/settings/qwen') return send(200, settings.save(await readJson(req)));
       if (method === 'POST' && path === '/api/settings/qwen/test') {

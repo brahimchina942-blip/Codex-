@@ -1,6 +1,6 @@
 {
   "name": "morocco-ai-crm",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Barsan 摩洛哥智能客户翻译助手：千问多模态、客户记忆、人工审核",
